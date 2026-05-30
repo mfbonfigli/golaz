@@ -27,10 +27,6 @@ import (
 // Sentinel errors
 // ---------------------------------------------------------------------------
 
-// ErrFieldNotPresent is returned by optional getters when the field does not
-// exist for this point format.
-var ErrFieldNotPresent = errors.New("field not present for this point format")
-
 // ErrNoExtraByteDescriptor is returned by ExtraByte(name) when no
 // ExtraByteDescriptor VLR was found in the file.
 var ErrNoExtraByteDescriptor = errors.New("no ExtraByteDescriptor VLR in file")
@@ -91,8 +87,9 @@ func pointPresentFor(format uint8, extraByteCount uint32) pointPresent {
 // ---------------------------------------------------------------------------
 
 // Point holds one decoded LAS point. Universal fields are plain struct fields.
-// Optional fields are accessed via getters returning (value, error); call the
-// corresponding Has*() method first to avoid the error branch in hot loops.
+// Optional fields are accessed via getters returning (value, bool); the bool is
+// false when the field does not exist for this point format. Call the
+// corresponding Has*() method first to skip the getter entirely in hot loops.
 //
 // A Point obtained via Scan() shares its raw and extra-byte slices with the
 // Reader's internal buffer — they are only valid until the next Scan() or
@@ -168,13 +165,13 @@ type Point struct {
 // Format returns the LAS point data format number (0–10).
 func (p *Point) Format() uint8 { return p.format }
 
-// HasGPS reports whether this point contains a GPS time value.
+// HasGPSTime reports whether this point contains a GPS time value.
 // True for formats 1–5, 6–10.
-func (p *Point) HasGPS() bool { return p.present&presentGPS != 0 }
+func (p *Point) HasGPSTime() bool { return p.present&presentGPS != 0 }
 
-// HasColor reports whether this point contains RGB colour values.
+// HasRGB reports whether this point contains RGB colour values.
 // True for formats 2, 3, 5, 7, 8, 10.
-func (p *Point) HasColor() bool { return p.present&presentColor != 0 }
+func (p *Point) HasRGB() bool { return p.present&presentColor != 0 }
 
 // HasNIR reports whether this point contains a Near Infrared value.
 // True for formats 8 and 10.
@@ -200,120 +197,84 @@ func (p *Point) HasExtraBytes() bool { return p.present&presentExtraB != 0 }
 // ---------------------------------------------------------------------------
 
 // GPSTime returns the GPS time for this point.
-// Returns ErrFieldNotPresent if HasGPS() is false.
-func (p *Point) GPSTime() (float64, error) {
-	if !p.HasGPS() {
-		return 0, ErrFieldNotPresent
+// ok is false if HasGPSTime() is false.
+func (p *Point) GPSTime() (float64, bool) {
+	if !p.HasGPSTime() {
+		return 0, false
 	}
-	return p.gpsTime, nil
+	return p.gpsTime, true
 }
 
-// Red returns the red channel value.
-// Returns ErrFieldNotPresent if HasColor() is false.
-func (p *Point) Red() (uint16, error) {
-	if !p.HasColor() {
-		return 0, ErrFieldNotPresent
+// RGB returns the red, green, and blue channel values together.
+// ok is false if HasRGB() is false.
+func (p *Point) RGB() (r, g, b uint16, ok bool) {
+	if !p.HasRGB() {
+		return 0, 0, 0, false
 	}
-	return p.red, nil
-}
-
-// Green returns the green channel value.
-// Returns ErrFieldNotPresent if HasColor() is false.
-func (p *Point) Green() (uint16, error) {
-	if !p.HasColor() {
-		return 0, ErrFieldNotPresent
-	}
-	return p.green, nil
-}
-
-// Blue returns the blue channel value.
-// Returns ErrFieldNotPresent if HasColor() is false.
-func (p *Point) Blue() (uint16, error) {
-	if !p.HasColor() {
-		return 0, ErrFieldNotPresent
-	}
-	return p.blue, nil
+	return p.red, p.green, p.blue, true
 }
 
 // NIR returns the Near Infrared value.
-// Returns ErrFieldNotPresent if HasNIR() is false.
-func (p *Point) NIR() (uint16, error) {
+// ok is false if HasNIR() is false.
+func (p *Point) NIR() (uint16, bool) {
 	if !p.HasNIR() {
-		return 0, ErrFieldNotPresent
+		return 0, false
 	}
-	return p.nir, nil
+	return p.nir, true
 }
 
 // ScannerChannel returns the scanner channel (0–3).
-// Returns ErrFieldNotPresent if HasScannerChannel() is false.
-func (p *Point) ScannerChannel() (uint8, error) {
+// ok is false if HasScannerChannel() is false.
+func (p *Point) ScannerChannel() (uint8, bool) {
 	if !p.HasScannerChannel() {
-		return 0, ErrFieldNotPresent
+		return 0, false
 	}
-	return p.scannerChannel, nil
+	return p.scannerChannel, true
 }
 
 // WavePacketDescriptorIndex returns the waveform packet descriptor index.
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) WavePacketDescriptorIndex() (uint8, error) {
+// ok is false if HasWavepacket() is false.
+func (p *Point) WavePacketDescriptorIndex() (uint8, bool) {
 	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
+		return 0, false
 	}
-	return p.waveIdx, nil
+	return p.waveIdx, true
 }
 
 // WaveformDataOffset returns the byte offset to the waveform data packet.
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) WaveformDataOffset() (uint64, error) {
+// ok is false if HasWavepacket() is false.
+func (p *Point) WaveformDataOffset() (uint64, bool) {
 	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
+		return 0, false
 	}
-	return p.waveOffset, nil
+	return p.waveOffset, true
 }
 
 // WaveformPacketSize returns the size in bytes of the waveform data packet.
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) WaveformPacketSize() (uint32, error) {
+// ok is false if HasWavepacket() is false.
+func (p *Point) WaveformPacketSize() (uint32, bool) {
 	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
+		return 0, false
 	}
-	return p.waveSize, nil
+	return p.waveSize, true
 }
 
-// ReturnPointWaveformLocation returns the return point waveform location (float32).
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) ReturnPointWaveformLocation() (float32, error) {
+// ReturnPointWaveformLocation returns the return point waveform location.
+// ok is false if HasWavepacket() is false.
+func (p *Point) ReturnPointWaveformLocation() (float32, bool) {
 	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
+		return 0, false
 	}
-	return p.waveLoc, nil
+	return p.waveLoc, true
 }
 
-// WaveXt returns the X(t) waveform parameter.
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) WaveXt() (float32, error) {
+// WaveDirection returns the X(t), Y(t), Z(t) direction vector parameters together.
+// ok is false if HasWavepacket() is false.
+func (p *Point) WaveDirection() (xt, yt, zt float32, ok bool) {
 	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
+		return 0, 0, 0, false
 	}
-	return p.waveXt, nil
-}
-
-// WaveYt returns the Y(t) waveform parameter.
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) WaveYt() (float32, error) {
-	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
-	}
-	return p.waveYt, nil
-}
-
-// WaveZt returns the Z(t) waveform parameter.
-// Returns ErrFieldNotPresent if HasWavepacket() is false.
-func (p *Point) WaveZt() (float32, error) {
-	if !p.HasWavepacket() {
-		return 0, ErrFieldNotPresent
-	}
-	return p.waveZt, nil
+	return p.waveXt, p.waveYt, p.waveZt, true
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +300,7 @@ func (p *Point) extraByte(name string, index map[string]int, descs []ExtraByteDe
 		return nil, ErrUnknownExtraByteField
 	}
 	if !p.HasExtraBytes() || p.extraBuf == nil {
-		return nil, ErrFieldNotPresent
+		return nil, fmt.Errorf("extra bytes not present in this point")
 	}
 	d := descs[i]
 	off := int(d.ByteOffset)

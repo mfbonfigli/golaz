@@ -121,29 +121,50 @@ for {
 
 #### Accessing point attributes
 
+Universal fields are plain struct fields. Optional fields return `(value, bool)` — the bool is `false` when the field does not exist for this point format. Call the corresponding `Has*()` guard first in hot loops to skip the getter entirely:
+
 ```go
 // Always present
 fmt.Println(p.X, p.Y, p.Z)
 fmt.Println(p.Intensity, p.Classification, p.ReturnNumber)
 
-// Conditional — check presence before accessing
-if p.HasGPS() {
+// Conditional — use Has* guard or inspect the bool return
+if p.HasGPSTime() {
     gps, _ := p.GPSTime()
     fmt.Println("GPS time:", gps)
 }
-if p.HasColor() {
-    r, _ := p.Red()
-    g, _ := p.Green()
-    b, _ := p.Blue()
+// or, alternatively:
+if gps, hasGpsTime := p.GPSTime(); hasGpsTime {
+    fmt.Println("GPS time:", gps)
 }
+
+if p.HasRGB() {
+    red, green, blue, _ := p.RGB()
+    fmt.Println("RGB:", red, green, blue)
+}
+// or, alternatively:
+if red, green, blue, hasColor := p.RGB(); hasColor {
+    fmt.Println("RGB:", red, green, blue)
+}
+
 if p.HasNIR() {
     nir, _ := p.NIR()
     fmt.Println("NIR:", nir)
 }
+// or alternatively:
+if nir, hasNir := p.NIR(); hasNir {
+    fmt.Println("NIR:", nir)
+}
+
 // LAS 1.4 extended fields (point formats 6–10)
 if p.HasExtendedFields() {
     ch, _ := p.ScannerChannel()
     fmt.Println("Scanner channel:", ch)
+}
+// Waveform direction vector (point formats 4, 5, 9, 10)
+if p.HasWavepacket() {
+    xt, yt, zt, _ := p.WaveDirection()
+    fmt.Println("Wave direction:", xt, yt, zt)
 }
 ```
 
@@ -224,7 +245,7 @@ for _, v := range r.VLRs() {
     fmt.Println(v.UserID, v.RecordID, len(v.Data), "bytes")
 }
 
-evlrs, err := r.EVLRs() // LAS 1.4 only
+evlrs, err := r.EVLRs() // nil, nil for LAS < 1.4
 ```
 
 ---

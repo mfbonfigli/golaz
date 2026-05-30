@@ -79,21 +79,33 @@ type Header struct {
 
 // WaveformDataOffset returns the byte offset in the file to waveform data packets.
 // Present in LAS 1.3 and later (used with point formats 4, 5, 9, 10).
-// Returns (0, false) for LAS 1.0–1.2.
-func (h *Header) WaveformDataOffset() (uint64, bool) {
-	return h.waveformDataOffset, h.hasWaveformData
+// Returns nil for LAS 1.0–1.2.
+func (h *Header) WaveformDataOffset() *uint64 {
+	if !h.hasWaveformData {
+		return nil
+	}
+	v := h.waveformDataOffset
+	return &v
 }
 
 // EVLROffset returns the byte offset in the file to the first EVLR.
-// Returns (0, false) for LAS < 1.4.
-func (h *Header) EVLROffset() (uint64, bool) {
-	return h.evlrOffset, h.hasEVLRFields
+// Returns nil for LAS < 1.4.
+func (h *Header) EVLROffset() *uint64 {
+	if !h.hasEVLRFields {
+		return nil
+	}
+	v := h.evlrOffset
+	return &v
 }
 
 // EVLRCount returns the number of Extended Variable Length Records.
-// Returns (0, false) for LAS < 1.4.
-func (h *Header) EVLRCount() (uint32, bool) {
-	return h.numberOfEVLRs, h.hasEVLRFields
+// Returns nil for LAS < 1.4.
+func (h *Header) EVLRCount() *uint32 {
+	if !h.hasEVLRFields {
+		return nil
+	}
+	v := h.numberOfEVLRs
+	return &v
 }
 
 // GPSTimeIsStandard reports whether GPS timestamps in this file use

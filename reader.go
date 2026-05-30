@@ -31,9 +31,9 @@ import (
 //
 // It is NOT safe for concurrent use by multiple goroutines. It maintains
 // internal decode state (arithmetic coder position, chunk boundaries, point
-// buffers) that is mutated on every Scan/Next/Seek call. To read the same file
-// from multiple goroutines, open a separate Reader per goroutine — each gets
-// its own file descriptor and decode state.
+// buffers) that is mutated on every Scan/Next/Seek call. Callers must either
+// open a separate Reader per goroutine or serialize access to a shared Reader
+// with a mutex.
 type Reader struct {
 	// source
 	rs      io.ReadSeeker
@@ -379,19 +379,23 @@ func (r *Reader) CRS() string {
 // The slice is owned by the Reader; do not modify.
 func (r *Reader) VLRs() []VLR { return r.vlrs }
 
-// EVLRs returns Extended Variable Length Records (LAS 1.4+ only).
+// EVLRs returns Extended Variable Length Records.
 // Parsed lazily on first call; subsequent calls return the cached slice.
-// Returns an error if the file is LAS < 1.4.
+// Returns nil, nil for LAS < 1.4 (the format has no EVLR section) and for
+// LAS 1.4 files that declare zero EVLRs. Only returns a non-nil error when
+// the EVLR section exists but cannot be read from disk.
 func (r *Reader) EVLRs() ([]EVLR, error) {
 	if r.evlrsLoaded {
 		return r.evlrs, nil
 	}
-	evlrOffset, ok := r.header.EVLROffset()
-	if !ok {
-		return nil, fmt.Errorf("EVLRs are not present in LAS %d.%d files",
-			r.header.VersionMajor, r.header.VersionMinor)
+	evlrOffsetPtr := r.header.EVLROffset()
+	if evlrOffsetPtr == nil {
+		// LAS < 1.4: no EVLR section exists; not an error.
+		r.evlrsLoaded = true
+		return nil, nil
 	}
-	evlrCount, _ := r.header.EVLRCount()
+	evlrOffset := *evlrOffsetPtr
+	evlrCount := *r.header.EVLRCount()
 	if evlrCount == 0 || evlrOffset == 0 {
 		r.evlrsLoaded = true
 		return nil, nil

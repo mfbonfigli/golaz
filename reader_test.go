@@ -122,13 +122,13 @@ func TestReader_Header_Fields_LAS12(t *testing.T) {
 		t.Error("scale factors should be non-zero")
 	}
 	// LAS 1.2 has no waveform offset or EVLR fields.
-	if _, ok := h.WaveformDataOffset(); ok {
+	if h.WaveformDataOffset() != nil {
 		t.Error("WaveformDataOffset should not be present for LAS 1.2")
 	}
-	if _, ok := h.EVLROffset(); ok {
+	if h.EVLROffset() != nil {
 		t.Error("EVLROffset should not be present for LAS 1.2")
 	}
-	if _, ok := h.EVLRCount(); ok {
+	if h.EVLRCount() != nil {
 		t.Error("EVLRCount should not be present for LAS 1.2")
 	}
 }
@@ -142,11 +142,11 @@ func TestReader_Header_Fields_LAS13(t *testing.T) {
 		t.Errorf("Version: got %d.%d want 1.3", h.VersionMajor, h.VersionMinor)
 	}
 	// LAS 1.3 has waveform offset.
-	if _, ok := h.WaveformDataOffset(); !ok {
+	if h.WaveformDataOffset() == nil {
 		t.Error("WaveformDataOffset should be present for LAS 1.3")
 	}
 	// LAS 1.3 has no EVLRs.
-	if _, ok := h.EVLROffset(); ok {
+	if h.EVLROffset() != nil {
 		t.Error("EVLROffset should not be present for LAS 1.3")
 	}
 }
@@ -162,10 +162,10 @@ func TestReader_Header_Fields_LAS14(t *testing.T) {
 	if h.NumberOfPoints != 1000 {
 		t.Errorf("NumberOfPoints: got %d want 1000", h.NumberOfPoints)
 	}
-	if _, ok := h.EVLROffset(); !ok {
+	if h.EVLROffset() == nil {
 		t.Error("EVLROffset should be present for LAS 1.4")
 	}
-	if _, ok := h.EVLRCount(); !ok {
+	if h.EVLRCount() == nil {
 		t.Error("EVLRCount should be present for LAS 1.4")
 	}
 	// PointsByReturn slots 5..14 should be zero for a standard file.
@@ -279,12 +279,15 @@ func TestReader_VLRs_WKT(t *testing.T) {
 // 4. EVLRs test
 // ---------------------------------------------------------------------------
 
-func TestReader_EVLRs_LAS12_Error(t *testing.T) {
+func TestReader_EVLRs_LAS12_Empty(t *testing.T) {
 	r := openReader(t, "las12_pf0_10pts.laz")
 	defer r.Close()
-	_, err := r.EVLRs()
-	if err == nil {
-		t.Error("EVLRs() should return error for LAS 1.2")
+	evlrs, err := r.EVLRs()
+	if err != nil {
+		t.Errorf("EVLRs() should not return error for LAS 1.2, got: %v", err)
+	}
+	if len(evlrs) != 0 {
+		t.Errorf("EVLRs() should return empty slice for LAS 1.2, got %d EVLRs", len(evlrs))
 	}
 }
 
@@ -398,20 +401,16 @@ func TestReader_Scan_vs_Reference_10pts(t *testing.T) {
 				}
 
 				// GPS time.
-				if p.HasGPS() {
-					gps, err := p.GPSTime()
-					if err != nil {
-						t.Errorf("pt %d GPSTime: %v", i, err)
-					} else if !withinTol(gps, ref.GPSTime, 1e-6) {
+				if p.HasGPSTime() {
+					gps, _ := p.GPSTime()
+					if !withinTol(gps, ref.GPSTime, 1e-6) {
 						t.Errorf("pt %d GPS: got %.10f want %.10f", i, gps, ref.GPSTime)
 					}
 				}
 
 				// Colour.
-				if p.HasColor() {
-					r_, _ := p.Red()
-					g_, _ := p.Green()
-					b_, _ := p.Blue()
+				if p.HasRGB() {
+					r_, g_, b_, _ := p.RGB()
 					if r_ != ref.Red {
 						t.Errorf("pt %d red: got %d want %d", i, r_, ref.Red)
 					}
@@ -607,10 +606,7 @@ func TestReader_Raw_PF6_RepackRoundtrip(t *testing.T) {
 		}
 		// Decode GPS from raw on-disk bytes[22:30].
 		rawGPS := float64frombitsLE(raw[22:30])
-		gps, err := p.GPSTime()
-		if err != nil {
-			t.Fatalf("pt %d: GPSTime: %v", i, err)
-		}
+		gps, _ := p.GPSTime()
 		if rawGPS != gps {
 			t.Errorf("pt %d: GPS mismatch: raw=%.10f getter=%.10f", i, rawGPS, gps)
 		}
@@ -778,8 +774,8 @@ func TestReader_ExtraByte_NoDescriptor(t *testing.T) {
 func TestReader_HasHelpers(t *testing.T) {
 	cases := []struct {
 		name     string
-		hasGPS   bool
-		hasColor bool
+		hasGPSTime   bool
+		hasRGB bool
 		hasNIR   bool
 		hasWave  bool
 		hasExt   bool
@@ -805,11 +801,11 @@ func TestReader_HasHelpers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Next: %v", err)
 			}
-			if p.HasGPS() != tc.hasGPS {
-				t.Errorf("HasGPS: got %v want %v", p.HasGPS(), tc.hasGPS)
+			if p.HasGPSTime() != tc.hasGPSTime {
+				t.Errorf("HasGPSTime: got %v want %v", p.HasGPSTime(), tc.hasGPSTime)
 			}
-			if p.HasColor() != tc.hasColor {
-				t.Errorf("HasColor: got %v want %v", p.HasColor(), tc.hasColor)
+			if p.HasRGB() != tc.hasRGB {
+				t.Errorf("HasRGB: got %v want %v", p.HasRGB(), tc.hasRGB)
 			}
 			if p.HasNIR() != tc.hasNIR {
 				t.Errorf("HasNIR: got %v want %v", p.HasNIR(), tc.hasNIR)
@@ -820,30 +816,30 @@ func TestReader_HasHelpers(t *testing.T) {
 			if p.HasExtendedFields() != tc.hasExt {
 				t.Errorf("HasExtendedFields: got %v want %v", p.HasExtendedFields(), tc.hasExt)
 			}
-			// Verify error returns when field is absent.
-			if !tc.hasGPS {
-				if _, err := p.GPSTime(); err == nil {
-					t.Error("GPSTime should return error when HasGPS=false")
+			// Verify bool=false when field is absent.
+			if !tc.hasGPSTime {
+				if _, ok := p.GPSTime(); ok {
+					t.Error("GPSTime should return ok=false when HasGPSTime=false")
 				}
 			}
-			if !tc.hasColor {
-				if _, err := p.Red(); err == nil {
-					t.Error("Red should return error when HasColor=false")
+			if !tc.hasRGB {
+				if _, _, _, ok := p.RGB(); ok {
+					t.Error("RGB should return ok=false when HasRGB=false")
 				}
 			}
 			if !tc.hasNIR {
-				if _, err := p.NIR(); err == nil {
-					t.Error("NIR should return error when HasNIR=false")
+				if _, ok := p.NIR(); ok {
+					t.Error("NIR should return ok=false when HasNIR=false")
 				}
 			}
 			if !tc.hasWave {
-				if _, err := p.WavePacketDescriptorIndex(); err == nil {
-					t.Error("WavePacketDescriptorIndex should return error when HasWavepacket=false")
+				if _, ok := p.WavePacketDescriptorIndex(); ok {
+					t.Error("WavePacketDescriptorIndex should return ok=false when HasWavepacket=false")
 				}
 			}
 			if !tc.hasExt {
-				if _, err := p.ScannerChannel(); err == nil {
-					t.Error("ScannerChannel should return error when HasExtendedFields=false")
+				if _, ok := p.ScannerChannel(); ok {
+					t.Error("ScannerChannel should return ok=false when HasExtendedFields=false")
 				}
 			}
 		})
@@ -1170,12 +1166,12 @@ func TestReader_Header_FullFields_LAS13(t *testing.T) {
 	}
 
 	// LAS 1.3: waveform data offset present
-	wdo, ok := h.WaveformDataOffset()
-	if !ok {
+	wdo := h.WaveformDataOffset()
+	if wdo == nil {
 		t.Fatal("WaveformDataOffset: want present for LAS 1.3")
 	}
-	if wdo != 0 {
-		t.Errorf("WaveformDataOffset: got %d want 0", wdo)
+	if *wdo != 0 {
+		t.Errorf("WaveformDataOffset: got %d want 0", *wdo)
 	}
 }
 
@@ -1254,19 +1250,19 @@ func TestReader_Header_FullFields_LAS14_10pts(t *testing.T) {
 	}
 
 	// LAS 1.4: EVLR fields present
-	eo, ok := h.EVLROffset()
-	if !ok {
+	eo := h.EVLROffset()
+	if eo == nil {
 		t.Fatal("EVLROffset: want present for LAS 1.4")
 	}
-	if eo != 0 {
-		t.Errorf("EVLROffset: got %d want 0", eo)
+	if *eo != 0 {
+		t.Errorf("EVLROffset: got %d want 0", *eo)
 	}
-	ec, ok := h.EVLRCount()
-	if !ok {
+	ec := h.EVLRCount()
+	if ec == nil {
 		t.Fatal("EVLRCount: want present for LAS 1.4")
 	}
-	if ec != 0 {
-		t.Errorf("EVLRCount: got %d want 0", ec)
+	if *ec != 0 {
+		t.Errorf("EVLRCount: got %d want 0", *ec)
 	}
 }
 
@@ -1437,11 +1433,11 @@ func TestReader_Points_AllFields_PF0(t *testing.T) {
 		}
 
 		// pf0 has no GPS, colour, NIR, or extended fields
-		if p.HasGPS() {
-			t.Errorf("pt%d: HasGPS should be false for pf0", i)
+		if p.HasGPSTime() {
+			t.Errorf("pt%d: HasGPSTime should be false for pf0", i)
 		}
-		if p.HasColor() {
-			t.Errorf("pt%d: HasColor should be false for pf0", i)
+		if p.HasRGB() {
+			t.Errorf("pt%d: HasRGB should be false for pf0", i)
 		}
 		if p.HasNIR() {
 			t.Errorf("pt%d: HasNIR should be false for pf0", i)
@@ -1476,13 +1472,10 @@ func TestReader_Points_GPSTime_PF1(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pt %d Next: %v", i, err)
 		}
-		if !p.HasGPS() {
-			t.Fatalf("pt%d: HasGPS should be true for pf1", i)
+		if !p.HasGPSTime() {
+			t.Fatalf("pt%d: HasGPSTime should be true for pf1", i)
 		}
-		gps, err := p.GPSTime()
-		if err != nil {
-			t.Fatalf("pt%d GPSTime: %v", i, err)
-		}
+		gps, _ := p.GPSTime()
 		if math.Abs(gps-wantGPS) > 1e-5 {
 			t.Errorf("pt%d GPSTime: got %.6f want %.6f", i, gps, wantGPS)
 		}
@@ -1516,12 +1509,10 @@ func TestReader_Points_RGB_PF2(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pt %d Next: %v", i, err)
 		}
-		if !p.HasColor() {
-			t.Fatalf("pt%d: HasColor should be true for pf2", i)
+		if !p.HasRGB() {
+			t.Fatalf("pt%d: HasRGB should be true for pf2", i)
 		}
-		red, _ := p.Red()
-		green, _ := p.Green()
-		blue, _ := p.Blue()
+		red, green, blue, _ := p.RGB()
 		if red != wantRGB[0] {
 			t.Errorf("pt%d Red: got %d want %d", i, red, wantRGB[0])
 		}
@@ -1532,8 +1523,8 @@ func TestReader_Points_RGB_PF2(t *testing.T) {
 			t.Errorf("pt%d Blue: got %d want %d", i, blue, wantRGB[2])
 		}
 		// pf2 has no GPS
-		if p.HasGPS() {
-			t.Errorf("pt%d: HasGPS should be false for pf2", i)
+		if p.HasGPSTime() {
+			t.Errorf("pt%d: HasGPSTime should be false for pf2", i)
 		}
 	}
 }
@@ -1552,23 +1543,18 @@ func TestReader_Points_GPS_And_RGB_PF3(t *testing.T) {
 			t.Fatalf("pt %d Next: %v", i, err)
 		}
 		// GPS
-		if !p.HasGPS() {
-			t.Fatalf("pt%d: HasGPS should be true for pf3", i)
+		if !p.HasGPSTime() {
+			t.Fatalf("pt%d: HasGPSTime should be true for pf3", i)
 		}
-		gps, err := p.GPSTime()
-		if err != nil {
-			t.Fatalf("pt%d GPSTime: %v", i, err)
-		}
+		gps, _ := p.GPSTime()
 		if math.Abs(gps-pf1GPSTimes[i]) > 1e-5 {
 			t.Errorf("pt%d GPSTime: got %.6f want %.6f", i, gps, pf1GPSTimes[i])
 		}
 		// RGB
-		if !p.HasColor() {
-			t.Fatalf("pt%d: HasColor should be true for pf3", i)
+		if !p.HasRGB() {
+			t.Fatalf("pt%d: HasRGB should be true for pf3", i)
 		}
-		red, _ := p.Red()
-		green, _ := p.Green()
-		blue, _ := p.Blue()
+		red, green, blue, _ := p.RGB()
 		if red != pf2RGB[i][0] {
 			t.Errorf("pt%d Red: got %d want %d", i, red, pf2RGB[i][0])
 		}
@@ -1689,13 +1675,10 @@ func TestReader_Points_AllFields_PF6(t *testing.T) {
 		}
 
 		// GPS time (pf6+ always has GPS)
-		if !p.HasGPS() {
-			t.Fatalf("pt%d: HasGPS should be true for pf6", i)
+		if !p.HasGPSTime() {
+			t.Fatalf("pt%d: HasGPSTime should be true for pf6", i)
 		}
-		gps, err := p.GPSTime()
-		if err != nil {
-			t.Fatalf("pt%d GPSTime: %v", i, err)
-		}
+		gps, _ := p.GPSTime()
 		if math.Abs(gps-want.GPSTime) > gpsTol {
 			t.Errorf("pt%d GPSTime: got %.6f want %.6f", i, gps, want.GPSTime)
 		}
@@ -1704,17 +1687,14 @@ func TestReader_Points_AllFields_PF6(t *testing.T) {
 		if !p.HasExtendedFields() {
 			t.Fatalf("pt%d: HasExtendedFields should be true for pf6", i)
 		}
-		sc, err := p.ScannerChannel()
-		if err != nil {
-			t.Fatalf("pt%d ScannerChannel: %v", i, err)
-		}
+		sc, _ := p.ScannerChannel()
 		if sc != want.ScannerChannel {
 			t.Errorf("pt%d ScannerChannel: got %d want %d", i, sc, want.ScannerChannel)
 		}
 
 		// pf6 has no colour or NIR
-		if p.HasColor() {
-			t.Errorf("pt%d: HasColor should be false for pf6", i)
+		if p.HasRGB() {
+			t.Errorf("pt%d: HasRGB should be false for pf6", i)
 		}
 		if p.HasNIR() {
 			t.Errorf("pt%d: HasNIR should be false for pf6", i)
@@ -1761,21 +1741,16 @@ func TestReader_Points_AllFields_PF8(t *testing.T) {
 		}
 
 		// GPS time
-		gps, err := p.GPSTime()
-		if err != nil {
-			t.Fatalf("pt%d GPSTime: %v", i, err)
-		}
+		gps, _ := p.GPSTime()
 		if math.Abs(gps-want.GPSTime) > gpsTol {
 			t.Errorf("pt%d GPSTime: got %.6f want %.6f", i, gps, want.GPSTime)
 		}
 
 		// RGB (same values as pf2/pf3)
-		if !p.HasColor() {
-			t.Fatalf("pt%d: HasColor should be true for pf8", i)
+		if !p.HasRGB() {
+			t.Fatalf("pt%d: HasRGB should be true for pf8", i)
 		}
-		red, _ := p.Red()
-		green, _ := p.Green()
-		blue, _ := p.Blue()
+		red, green, blue, _ := p.RGB()
 		if red != pf2RGB[i][0] {
 			t.Errorf("pt%d Red: got %d want %d", i, red, pf2RGB[i][0])
 		}
@@ -1790,19 +1765,13 @@ func TestReader_Points_AllFields_PF8(t *testing.T) {
 		if !p.HasNIR() {
 			t.Fatalf("pt%d: HasNIR should be true for pf8", i)
 		}
-		nir, err := p.NIR()
-		if err != nil {
-			t.Fatalf("pt%d NIR: %v", i, err)
-		}
+		nir, _ := p.NIR()
 		if nir != pf8NIR[i] {
 			t.Errorf("pt%d NIR: got %d want %d", i, nir, pf8NIR[i])
 		}
 
 		// ScannerChannel
-		sc, err := p.ScannerChannel()
-		if err != nil {
-			t.Fatalf("pt%d ScannerChannel: %v", i, err)
-		}
+		sc, _ := p.ScannerChannel()
 		if sc != want.ScannerChannel {
 			t.Errorf("pt%d ScannerChannel: got %d want %d", i, sc, want.ScannerChannel)
 		}
