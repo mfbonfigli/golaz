@@ -8,7 +8,7 @@
 
 ---
 
-## About GoLaz
+## 📖 About GoLaz
 
 GoLaz is a **pure Go** library for reading **LAS** and **LAZ** (compressed LAS) point cloud files. It is a port of the [LASzip](https://github.com/LASzip/LASzip) C++ library, rewritten from scratch in Go with no CGO, no C bindings, and no external native dependencies.
 
@@ -31,9 +31,7 @@ GoLaz is a **pure Go** library for reading **LAS** and **LAZ** (compressed LAS) 
 
 GoLaz currently focuses on reading. Writing is not yet supported (but contributions are welcome).
 
----
-
-## Installation
+## 📦 Installation
 
 ```bash
 go get github.com/mfbonfigli/golaz
@@ -41,9 +39,7 @@ go get github.com/mfbonfigli/golaz
 
 Requires Go 1.26 or later. No other dependencies.
 
----
-
-## Usage
+## 🚀 Usage
 
 ### Opening a file
 
@@ -64,8 +60,6 @@ f, _ := os.Open("scan.las")
 r, err := golaz.OpenReader(f)
 ```
 
----
-
 ### Reading the header
 
 ```go
@@ -79,8 +73,6 @@ fmt.Println("Offset:       ", h.OffsetX, h.OffsetY, h.OffsetZ)
 fmt.Println("Bounding box: ", h.MinX, h.MinY, h.MinZ, "→", h.MaxX, h.MaxY, h.MaxZ)
 fmt.Println("Compressed:   ", h.IsCompressed)
 ```
-
----
 
 ### Reading points — `Scan` vs `Next`
 
@@ -187,8 +179,6 @@ if err == nil {
 }
 ```
 
----
-
 ### Seeking
 
 Jump to any point by zero-based index. Works for both compressed and uncompressed files:
@@ -204,8 +194,6 @@ r.Scan(&p)
 // Go back to the beginning.
 r.Reset()
 ```
-
----
 
 ### Coordinate reference system metadata
 
@@ -247,8 +235,6 @@ for _, v := range r.VLRs() {
 
 evlrs, err := r.EVLRs() // nil, nil for LAS < 1.4
 ```
-
----
 
 ### Selective decompression
 
@@ -292,17 +278,22 @@ Available masks:
 
 > **Note:** the XY coordinates, scanner channel, and return information are always decoded regardless of the mask.
 
----
 
-## License
+## 🐞 Reporting a bug
+
+golaz is an AI-assisted porting that has been tested against a range of LAS and LAZ files. As with any other software, bugs are possible. If you encounter a file that cannot be properly read, or any other bug, please [open an issue](https://github.com/mfbonfigli/golaz/issues) and attach (or describe) the file, or share it privately with the library maintainers over separate channels (e.g. email).
+
+## ☕ Support the Project
+
+If golaz helped you or your business please consider **[making a donation](https://ko-fi.com/mfbonfigli)**. 
+
+## 📄 License
 
 GoLaz is released under the [Apache License 2.0](LICENSE).
 
 The LASzip algorithm and the original C++ implementation are Copyright © 2007–2022 rapidlasso GmbH also licensed under the Apache License 2.0.
 
----
-
-## Credits
+## 🙏 Credits
 
 **GoLaz** was developed by [Massimo Federico Bonfigli](mailto:m.federico.bonfigli@gmail.com).
 
