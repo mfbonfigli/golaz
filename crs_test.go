@@ -26,6 +26,8 @@ package golaz
 //   - File with no CRS (extrabytes.las) — nil/empty returns
 
 import (
+	"encoding/binary"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,6 +42,35 @@ func openVLR(t *testing.T, name string) *Reader {
 		t.Fatalf("Open %q: %v", name, err)
 	}
 	return r
+}
+
+func geoWithShorts(values map[uint16]uint16) *GeoTIFFMetadata {
+	geo := &GeoTIFFMetadata{Keys: make(map[uint16]*GeoTIFFKey, len(values))}
+	for keyID, value := range values {
+		geo.Keys[keyID] = &GeoTIFFKey{
+			KeyID:    keyID,
+			Type:     GTTagTypeShort,
+			Count:    1,
+			rawValue: value,
+		}
+	}
+	return geo
+}
+
+func packShorts(values ...uint16) []byte {
+	out := make([]byte, len(values)*2)
+	for i, value := range values {
+		binary.LittleEndian.PutUint16(out[i*2:], value)
+	}
+	return out
+}
+
+func packDoubles(values ...float64) []byte {
+	out := make([]byte, len(values)*8)
+	for i, value := range values {
+		binary.LittleEndian.PutUint64(out[i*8:], math.Float64bits(value))
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -294,13 +325,71 @@ func TestCRS_GeoTIFF_Geographic_4326(t *testing.T) {
 	}
 }
 
-func TestCRS_UserDefinedCodes_Empty(t *testing.T) {
-	// lots_of_vlr: both projected (3072=32767) and geographic (2048=32767) are
-	// user-defined — outside EPSG range → CRS() must return "".
+func TestCRS_UserDefinedCodes_WKT(t *testing.T) {
+	// lots_of_vlr: both projected (3072=32767) and geographic (2048=32767)
+	// are user-defined. CRS() should synthesize WKT from the GeoTIFF keys.
 	r := openVLR(t, "lots_of_vlr.las")
 	defer r.Close()
-	if got := r.CRS(); got != "" {
-		t.Errorf("CRS() for user-defined codes: got %q want %q", got, "")
+	got := r.CRS()
+	if got == "" {
+		t.Fatal("CRS() for user-defined codes returned empty string")
+	}
+	for _, want := range []string{
+		`PROJCS["User-defined projected CRS"`,
+		`PROJECTION["Transverse_Mercator"]`,
+		`SPHEROID["GRS 1980"`,
+		`UNIT["US survey foot"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("CRS() synthesized WKT missing %q; got %q", want, got)
+		}
+	}
+}
+
+func TestGeoTIFF_CRS_GeoTIFF11EPSGRanges(t *testing.T) {
+	geo := geoWithShorts(map[uint16]uint16{
+		1024: 1,    // projected model type
+		3072: 3857, // EPSG projected CRS below the old GeoTIFF 1.0 20000 range
+	})
+	if got := geo.CRS(); got != "EPSG:3857" {
+		t.Errorf("GeoTIFF CRS(): got %q want %q", got, "EPSG:3857")
+	}
+}
+
+func TestGeoTIFF_CRS_HorizontalVerticalEPSG(t *testing.T) {
+	geo := geoWithShorts(map[uint16]uint16{
+		1024: 2,    // geographic model type
+		2048: 4326, // WGS 84
+		4096: 5703, // NAVD88 height
+	})
+	if got := geo.CRS(); got != "EPSG:4326+5703" {
+		t.Errorf("GeoTIFF CRS(): got %q want %q", got, "EPSG:4326+5703")
+	}
+}
+
+func TestParseGeoTIFF_MultiValueKeys(t *testing.T) {
+	// Header (4 shorts), 3 key entries (12 shorts), then 3 extra SHORT values.
+	directory := packShorts(
+		1, 1, 1, 3,
+		1024, 0, 1, 1,
+		2062, 34736, 3, 0,
+		6000, 34735, 3, 16,
+		7, 8, 9,
+	)
+	doubles := packDoubles(1.5, 2.5, 3.5)
+
+	geo, err := ParseGeoTIFF(directory, doubles, nil)
+	if err != nil {
+		t.Fatalf("ParseGeoTIFF: %v", err)
+	}
+	if geo.MinorRevision != 1 {
+		t.Errorf("MinorRevision: got %d want 1", geo.MinorRevision)
+	}
+	if got := geo.Keys[2062].AsDoubles(); len(got) != 3 || got[0] != 1.5 || got[2] != 3.5 {
+		t.Errorf("double array: got %#v", got)
+	}
+	if got := geo.Keys[6000].AsShorts(); len(got) != 3 || got[0] != 7 || got[2] != 9 {
+		t.Errorf("short array: got %#v", got)
 	}
 }
 

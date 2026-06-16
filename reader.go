@@ -327,52 +327,20 @@ func (r *Reader) GeoTIFF() (*GeoTIFFMetadata, error) {
 }
 
 // CRS returns a string identifying the coordinate reference system, or "" if
-// none can be determined. Preference order:
-//
-//  1. WKT CoordinateSystem (recID 2112) — returned as-is.
-//  2. GeoTIFF ProjectedCSTypeGeoKey (key 3072) in range 20000–32760 → "EPSG:XYZ"
-//  3. GeoTIFF GeographicTypeGeoKey (key 2048) in range 4000–4999  → "EPSG:XYZ"
-//
-// If a valid VerticalCSTypeGeoKey (key 4096) in range 5000–5999 is also present
-// alongside a projected or geographic code, the returned string is "EPSG:XYZ+LMN".
-// GeoTIFF codes outside the stated EPSG ranges (e.g. 32767 = user-defined) are
-// skipped and do not contribute to the result.
+// none can be determined. WKT CoordinateSystem records (recID 2112) take
+// precedence. Otherwise GeoTIFF keys are interpreted as an EPSG horizontal CRS,
+// an EPSG horizontal+vertical compound CRS, or a WKT string synthesized from
+// user-defined GeoTIFF keys.
 func (r *Reader) CRS() string {
 	if wkt := r.WKT(); wkt != nil && wkt.CoordinateSystem != "" {
 		return wkt.CoordinateSystem
 	}
 
-	geo, _ := r.GeoTIFF()
-	if geo == nil {
+	geo, err := r.GeoTIFF()
+	if geo == nil || err != nil {
 		return ""
 	}
-
-	// Optional vertical CRS suffix.
-	vertSuffix := ""
-	if val := geo.Keys[4096]; val != nil && val.Type == GTTagTypeShort {
-		code := val.AsShort()
-		if code >= 5000 && code <= 5999 {
-			vertSuffix = fmt.Sprintf("+%d", code)
-		}
-	}
-
-	// Projected CRS takes priority over geographic.
-	if val := geo.Keys[3072]; val != nil && val.Type == GTTagTypeShort {
-		code := val.AsShort()
-		if code >= 20000 && code <= 32760 {
-			return fmt.Sprintf("EPSG:%d%s", code, vertSuffix)
-		}
-	}
-
-	// Geographic CRS.
-	if val := geo.Keys[2048]; val != nil && val.Type == GTTagTypeShort {
-		code := val.AsShort()
-		if code >= 4000 && code <= 4999 {
-			return fmt.Sprintf("EPSG:%d%s", code, vertSuffix)
-		}
-	}
-
-	return ""
+	return geo.CRS()
 }
 
 // VLRs returns all Variable Length Records parsed at Open time.
