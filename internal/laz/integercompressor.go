@@ -19,21 +19,24 @@
 // Package laz provides LAZ (LASzip) decompression for LAS point cloud data.
 //
 // integercompressor.go — IntegerCompressor ported from
-// src/integercompressor.hpp/cpp. Decompression path only.
+// src/integercompressor.hpp/cpp. Both compression and decompression paths.
 // Implements predictive difference coding for integer values, where the
 // prediction residual (corrector) is entropy-coded using k-bit intervals.
 package laz
 
 import "fmt"
 
-// IntegerCompressor provides decompression of integer numbers using
-// predictive difference coding with multiple contexts. The compressor encodes
-// two things: (1) the number k of miss-predicted low-order bits, and (2)
-// the k-bit number that corrects the missprediction.
+// IntegerCompressor provides compression and decompression of integer
+// numbers using predictive difference coding with multiple contexts. The
+// compressor encodes two things: (1) the number k of miss-predicted
+// low-order bits, and (2) the k-bit number that corrects the missprediction.
+// An instance is bound to either an encoder (NewIntegerCompressor) or a
+// decoder (NewIntegerDecompressor), never both.
 type IntegerCompressor struct {
+	enc *ArithmeticEncoder
 	dec *ArithmeticDecoder
 
-	k uint32 // number of correction bits from last decode
+	k uint32 // number of correction bits from last compress/decompress
 
 	contexts  uint32
 	bitsHigh  uint32
@@ -63,8 +66,31 @@ type IntegerCompressor struct {
 //	bitsHigh:  how many of the higher bits are compressed with a symbol model (default 8)
 //	range_:    explicit range for the corrector (0 = derive from bits)
 func NewIntegerDecompressor(dec *ArithmeticDecoder, bits, contexts, bitsHigh, range_ uint32) *IntegerCompressor {
+	ic := newIntegerCompressor(bits, contexts, bitsHigh, range_)
+	ic.dec = dec
+	return ic
+}
+
+// NewIntegerCompressor creates a new IntegerCompressor for compression.
+//
+// Parameters (matching C++ constructor):
+//
+//	enc:       the ArithmeticEncoder to write to
+//	bits:      number of bits for the integer (default 16)
+//	contexts:   number of contexts (default 1)
+//	bitsHigh:  how many of the higher bits are compressed with a symbol model (default 8)
+//	range_:    explicit range for the corrector (0 = derive from bits)
+func NewIntegerCompressor(enc *ArithmeticEncoder, bits, contexts, bitsHigh, range_ uint32) *IntegerCompressor {
+	ic := newIntegerCompressor(bits, contexts, bitsHigh, range_)
+	ic.enc = enc
+	return ic
+}
+
+// newIntegerCompressor computes the corrector range and bounds shared by
+// both the compression and decompression constructors (identical to the
+// C++ constructors).
+func newIntegerCompressor(bits, contexts, bitsHigh, range_ uint32) *IntegerCompressor {
 	ic := &IntegerCompressor{
-		dec:      dec,
 		bits:     bits,
 		contexts: contexts,
 		bitsHigh: bitsHigh,
@@ -98,6 +124,63 @@ func NewIntegerDecompressor(dec *ArithmeticDecoder, bits, contexts, bitsHigh, ra
 	}
 
 	return ic
+}
+
+// InitCompressor creates and initializes all entropy models on the encoder
+// side. Must be called before Compress. Port of
+// IntegerCompressor::initCompressor().
+func (ic *IntegerCompressor) InitCompressor() {
+	if ic.enc == nil {
+		panic("IntegerCompressor: InitCompressor called but enc is nil")
+	}
+
+	// Create mBits models (one per context, for encoding k).
+	if ic.mBits == nil {
+		ic.mBits = make([]*ArithmeticModel, ic.contexts)
+		for i := uint32(0); i < ic.contexts; i++ {
+			ic.mBits[i] = ic.enc.CreateSymbolModel(ic.corrBits + 1)
+		}
+		// Create mCorrector models (for encoding the corrector value).
+		ic.mCorrectorBit = ic.enc.CreateBitModel()
+		ic.mCorrector = make([]*ArithmeticModel, ic.corrBits+1)
+		// mCorrector[0] is unused; we use mCorrectorBit instead.
+		for i := uint32(1); i <= ic.corrBits; i++ {
+			if i <= ic.bitsHigh {
+				ic.mCorrector[i] = ic.enc.CreateSymbolModel(1 << i)
+			} else {
+				ic.mCorrector[i] = ic.enc.CreateSymbolModel(1 << ic.bitsHigh)
+			}
+		}
+	}
+
+	// Init mBits models.
+	for i := uint32(0); i < ic.contexts; i++ {
+		ic.enc.InitSymbolModel(ic.mBits[i], nil)
+	}
+	// Init mCorrector models.
+	ic.enc.InitBitModel(ic.mCorrectorBit)
+	for i := uint32(1); i <= ic.corrBits; i++ {
+		ic.enc.InitSymbolModel(ic.mCorrector[i], nil)
+	}
+}
+
+// Compress encodes the integer value iReal given the predicted value iPred
+// and context. The corrector (iReal - iPred, with int32 wraparound) is
+// folded into [corrMin, corrMax] exactly like the C++ and entropy-coded.
+func (ic *IntegerCompressor) Compress(iPred, iReal int32, context uint32) error {
+	if ic.enc == nil {
+		return fmt.Errorf("IntegerCompressor: enc is nil")
+	}
+	// The corrector will be within the interval [-(corrRange-1), +(corrRange-1)].
+	corr := iReal - iPred
+	// We fold the corrector into the interval [corrMin, corrMax].
+	if corr < ic.corrMin {
+		corr += int32(ic.corrRange)
+	} else if corr > ic.corrMax {
+		corr -= int32(ic.corrRange)
+	}
+	ic.writeCorrector(corr, ic.mBits[context])
+	return nil
 }
 
 // InitDecompressor creates and initializes all entropy models.
@@ -156,8 +239,75 @@ func (ic *IntegerCompressor) Decompress(iPred int32, context uint32) (int32, err
 	return real, nil
 }
 
-// GetK returns the number of correction bits from the last Decompress call.
+// GetK returns the number of correction bits from the last Compress or
+// Decompress call.
 func (ic *IntegerCompressor) GetK() uint32 { return ic.k }
+
+// writeCorrector encodes the corrector value into the bit stream.
+// This is the port of IntegerCompressor::writeCorrector() — the
+// !COMPRESS_ONLY_K path.
+func (ic *IntegerCompressor) writeCorrector(c int32, mBits *ArithmeticModel) {
+	// Find the tightest interval [-(2^k - 1), +(2^k)] that contains c.
+	k := uint32(0)
+
+	// Do this by checking the absolute value of c (adjusted for the case
+	// that c is 2^k). Note: uint32(-c) at c == int32 min wraps to
+	// 0x80000000, yielding k == 32, exactly like the C++ U32 cast.
+	var c1 uint32
+	if c <= 0 {
+		c1 = uint32(-c)
+	} else {
+		c1 = uint32(c - 1)
+	}
+
+	// This loop could be replaced with more efficient code.
+	for c1 != 0 {
+		c1 >>= 1
+		k++
+	}
+	ic.k = k
+
+	// The number k is between 0 and corrBits and describes the interval the
+	// corrector falls into. We can compress the exact location of c within
+	// this interval using k bits.
+	ic.enc.EncodeSymbol(mBits, k)
+
+	if k != 0 {
+		// c is either smaller than 0 or bigger than 1.
+		if k < 32 {
+			// Translate the corrector c into the k-bit interval [0, 2^k - 1].
+			if c < 0 {
+				// c is in [-(2^k - 1), -(2^(k-1))]: translate into
+				// [0, 2^(k-1) - 1] by adding (2^k - 1).
+				c += int32((uint32(1) << k) - 1)
+			} else {
+				// c is in [2^(k-1) + 1, 2^k]: translate into
+				// [2^(k-1), 2^k - 1] by subtracting 1.
+				c -= 1
+			}
+			if k <= ic.bitsHigh {
+				// For small k we code the interval in one step.
+				ic.enc.EncodeSymbol(ic.mCorrector[k], uint32(c))
+			} else {
+				// For larger k we need to code the interval in two steps.
+				// Figure out how many lower bits there are.
+				k1 := k - ic.bitsHigh
+				// c1 represents the lowest k-bitsHigh+1 bits.
+				c1 = uint32(c) & ((uint32(1) << k1) - 1)
+				// c represents the highest bitsHigh bits.
+				c = int32(uint32(c) >> k1)
+				// Compress the higher bits using a context table.
+				ic.enc.EncodeSymbol(ic.mCorrector[k], uint32(c))
+				// Store the lower k1 bits raw.
+				ic.enc.WriteBits(k1, c1)
+			}
+		}
+		// k == 32: nothing more to write; the decoder returns corrMin.
+	} else {
+		// c is 0 or 1.
+		ic.enc.EncodeBit(ic.mCorrectorBit, uint32(c))
+	}
+}
 
 // readCorrector decodes the corrector value from the bit stream.
 // This is the port of IntegerCompressor::readCorrector() — the !COMPRESS_ONLY_K path.

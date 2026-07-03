@@ -107,13 +107,18 @@ type ArithmeticModel struct {
 	LastSymbol         uint32   // last symbol index (= symbols - 1)
 	TableSize          uint32   // size of the decoder table
 	TableShift         uint32   // shift amount for table indexing
+	compress           bool     // encoder mode: skip decoder-table build (C++: compress)
 }
 
 // NewArithmeticModel creates a new symbol model for the given alphabet size.
-// Symbols must be >= 2 and <= 2048.
-func NewArithmeticModel(symbols uint32) *ArithmeticModel {
+// Symbols must be >= 2 and <= 2048. When compress is true the model is used
+// by the encoder and the decoder look-up table is never allocated or built
+// (C++ arithmeticmodel.cpp:104,155); the distributions remain bit-identical
+// in both modes.
+func NewArithmeticModel(symbols uint32, compress bool) *ArithmeticModel {
 	return &ArithmeticModel{
-		Symbols: symbols,
+		Symbols:  symbols,
+		compress: compress,
 	}
 }
 
@@ -128,7 +133,8 @@ func (m *ArithmeticModel) Init(table []uint32) {
 		m.LastSymbol = symbols - 1
 
 		// For decompression with more than 16 symbols, build a decoder table.
-		if symbols > 16 {
+		// Encoder-mode models (compress) never need it.
+		if !m.compress && symbols > 16 {
 			tableBits := uint32(3)
 			for symbols > (1 << (tableBits + 2)) {
 				tableBits++

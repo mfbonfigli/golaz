@@ -106,7 +106,7 @@ func (d *ArithmeticDecoder) InitBitModel(m *ArithmeticBitModel) {
 
 // CreateSymbolModel creates a new ArithmeticModel for n symbols.
 func (d *ArithmeticDecoder) CreateSymbolModel(n uint32) *ArithmeticModel {
-	return NewArithmeticModel(n)
+	return NewArithmeticModel(n, false)
 }
 
 // InitSymbolModel initializes a symbol model, optionally with a frequency table.

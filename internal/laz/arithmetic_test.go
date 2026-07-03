@@ -101,7 +101,7 @@ func TestBitModelCounts_StayConsistent(t *testing.T) {
 // ===========================================================================
 
 func TestSymbolModelInit_Small(t *testing.T) {
-	m := NewArithmeticModel(8) // 8 symbols
+	m := NewArithmeticModel(8, false) // 8 symbols
 	m.Init(nil)
 
 	if m.LastSymbol != 7 {
@@ -123,7 +123,7 @@ func TestSymbolModelInit_Small(t *testing.T) {
 }
 
 func TestSymbolModelInit_Large(t *testing.T) {
-	m := NewArithmeticModel(32) // > 16, should use decoder table
+	m := NewArithmeticModel(32, false) // > 16, should use decoder table
 	m.Init(nil)
 
 	if m.DecoderTable == nil {
@@ -138,7 +138,7 @@ func TestSymbolModelInit_Large(t *testing.T) {
 }
 
 func TestSymbolModelInit_WithTable(t *testing.T) {
-	m := NewArithmeticModel(4)
+	m := NewArithmeticModel(4, false)
 	table := []uint32{10, 5, 2, 1}
 	m.Init(table)
 
@@ -157,7 +157,7 @@ func TestSymbolModelInit_WithTable(t *testing.T) {
 }
 
 func TestSymbolModelDistribution_Monotonic(t *testing.T) {
-	m := NewArithmeticModel(8)
+	m := NewArithmeticModel(8, false)
 	m.Init(nil)
 
 	// Distribution should be non-decreasing.
@@ -179,7 +179,7 @@ func TestSymbolModelInvalidSymbols(t *testing.T) {
 			t.Error("expected panic for 1 symbol")
 		}
 	}()
-	m := NewArithmeticModel(1)
+	m := NewArithmeticModel(1, false)
 	m.Init(nil)
 }
 

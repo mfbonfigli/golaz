@@ -216,6 +216,37 @@ func (lz *LASzip) Unpack(data []byte) error {
 	return nil
 }
 
+// Pack serializes the LASzip configuration into the VLR payload format read
+// by Unpack (34 + 6*num_items bytes). C++ original: LASzip::pack() in
+// src/laszip.cpp. The items must have been set up (and versions requested)
+// before packing.
+func (lz *LASzip) Pack() ([]byte, error) {
+	if lz.NumItems == 0 || int(lz.NumItems) != len(lz.Items) {
+		return nil, fmt.Errorf("pack: no items to pack (numItems=%d, len(items)=%d)", lz.NumItems, len(lz.Items))
+	}
+	if err := lz.checkItems(0); err != nil {
+		return nil, fmt.Errorf("pack: %w", err)
+	}
+	data := make([]byte, 34+6*int(lz.NumItems))
+	binary.LittleEndian.PutUint16(data[0:2], lz.Compressor)
+	binary.LittleEndian.PutUint16(data[2:4], lz.Coder)
+	data[4] = lz.VersionMajor
+	data[5] = lz.VersionMinor
+	binary.LittleEndian.PutUint16(data[6:8], lz.VersionRevision)
+	binary.LittleEndian.PutUint32(data[8:12], lz.Options)
+	binary.LittleEndian.PutUint32(data[12:16], lz.ChunkSize)
+	binary.LittleEndian.PutUint64(data[16:24], uint64(lz.NumberOfSpecialEVLRs))
+	binary.LittleEndian.PutUint64(data[24:32], uint64(lz.OffsetToSpecialEVLRs))
+	binary.LittleEndian.PutUint16(data[32:34], lz.NumItems)
+	for i := 0; i < int(lz.NumItems); i++ {
+		off := 34 + 6*i
+		binary.LittleEndian.PutUint16(data[off:off+2], lz.Items[i].Type)
+		binary.LittleEndian.PutUint16(data[off+2:off+4], lz.Items[i].Size)
+		binary.LittleEndian.PutUint16(data[off+4:off+6], lz.Items[i].Version)
+	}
+	return data, nil
+}
+
 func GetDefaultVersion(pointType, lasMajor, lasMinor uint8) uint16 {
 	if pointType >= 6 && pointType <= 10 {
 		if lasMajor >= 1 && lasMinor >= 5 {
