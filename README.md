@@ -1,6 +1,6 @@
 # GoLaz
 
-### Read LAS and LAZ point clouds from pure Go — no CGO, no bindings, no fuss.
+### Read and write LAS and LAZ point clouds from pure Go — no CGO, no bindings, no fuss.
 
 <p align="center">
   <img src="assets/logo.png" alt="GoLaz logo" width="100%"/>
@@ -10,7 +10,7 @@
 
 ## 📖 About GoLaz
 
-GoLaz is a **pure Go** library for reading **LAS** and **LAZ** (compressed LAS) point cloud files. It is a port of the [LASzip](https://github.com/LASzip/LASzip) C++ library, rewritten from scratch in Go with no CGO, no C bindings, and no external native dependencies.
+GoLaz is a **pure Go** library for reading and writing **LAS** and **LAZ** (compressed LAS) point cloud files. It is a port of the [LASzip](https://github.com/LASzip/LASzip) C++ library, rewritten from scratch in Go with no CGO, no C bindings, and no external native dependencies.
 
 > **Unofficial port.** GoLaz is an independent community port and is not affiliated with or endorsed by rapidlasso GmbH, the authors of LASzip.
 
@@ -30,8 +30,9 @@ GoLaz is a **pure Go** library for reading **LAS** and **LAZ** (compressed LAS) 
 | **Selective decode** | Skip unused layers for faster I/O on LAS 1.4 v3/v4 files |
 | **Seeking** | Random-access seek to any point by index |
 | **Corruption recovery** | Corrupt or missing chunk tables and damaged chunks are recovered like the C++ reference: healthy chunks remain readable |
+| **Writing** | Uncompressed `.las` and compressed `.laz` output for all point formats (0 – 10), LAS 1.2 – 1.5; fixed-size or explicit chunk boundaries; point counts, per-return counts, and bounding box patched into the header on close |
 
-GoLaz currently focuses on reading. Writing is not yet supported (but contributions are welcome).
+GoLaz supports both reading and writing. The compressed point data it produces is byte-identical to the C++ LASzip reference output for the same input and settings.
 
 ## 📦 Installation
 
@@ -280,6 +281,72 @@ Available masks:
 
 > **Note:** the XY coordinates, scanner channel, and return information are always decoded regardless of the mask.
 
+### Writing files
+
+`Create` writes a new file; the `.laz` extension selects compression automatically (override with `WithCompression`). Build points with `NewPoint` and the `Set*` methods, quantize coordinates with `SetCoordinates`, and call `Close` to flush the compressed chunk table and patch the point counts and bounding box into the header:
+
+```go
+hdr := golaz.WriterHeader{
+    PointFormat: 7,                              // LAS 1.4, GPS time + RGB
+    ScaleX: 0.001, ScaleY: 0.001, ScaleZ: 0.001, // 0 → defaults to 0.001
+    OffsetX: 500000, OffsetY: 4400000,
+}
+
+w, err := golaz.Create("out.laz", hdr) // ".laz" → compressed
+if err != nil {
+    log.Fatal(err)
+}
+
+p := golaz.NewPoint(7)
+w.SetCoordinates(p, 500123.456, 4400987.654, 341.25)
+p.Intensity = 1200
+p.ReturnNumber, p.NumberOfReturns = 1, 2
+p.Classification = 2 // ground
+p.SetGPSTime(315964800.0)
+p.SetRGB(65535, 32768, 0)
+
+if err := w.WritePoint(p); err != nil {
+    log.Fatal(err)
+}
+
+if err := w.Close(); err != nil {
+    log.Fatal(err)
+}
+```
+
+Streaming from a `Reader` to a `Writer` is lossless: `WritePoint` serializes the integer `RawX/RawY/RawZ` coordinates directly (the float64 `X/Y/Z` are never re-quantized), so a read-then-write pipeline reproduces every point record byte for byte:
+
+```go
+r, _ := golaz.Open("scan.las")
+defer r.Close()
+h := r.Header()
+
+w, _ := golaz.Create("scan.laz", golaz.WriterHeader{
+    VersionMinor: h.VersionMinor,
+    PointFormat:  h.PointDataFormat,
+    ScaleX: h.ScaleX, ScaleY: h.ScaleY, ScaleZ: h.ScaleZ,
+    OffsetX: h.OffsetX, OffsetY: h.OffsetY, OffsetZ: h.OffsetZ,
+})
+
+var p golaz.Point
+for {
+    if err := r.Scan(&p); err == io.EOF {
+        break
+    } else if err != nil {
+        log.Fatal(err)
+    }
+    if err := w.WritePoint(&p); err != nil {
+        log.Fatal(err)
+    }
+}
+if err := w.Close(); err != nil {
+    log.Fatal(err)
+}
+```
+
+`NewWriter` accepts any `io.Writer` (compression off by default — enable with `WithCompression(true)`). If the destination also implements `io.WriteSeeker` the header is patched on `Close`; otherwise `WriterHeader.NumberOfPoints` must be declared up front and the bounding box and per-return counts are left zero. `WithChunkSize` tunes the compressed chunk size (default 50 000); `WithChunkSize(0)` enables variable-size chunking with explicit `w.Chunk()` boundaries.
+
+Current writer limitations: EVLRs, waveform data payloads, and LAS 1.0/1.1 output are not supported, and compatibility-mode (`laszip -compatible`) output is not produced.
 
 ## 🐞 Reporting a bug
 

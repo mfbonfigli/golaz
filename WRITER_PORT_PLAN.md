@@ -1,5 +1,16 @@
 # LAZ Writer Porting Plan (LASzip C++ → golaz)
 
+> **Status (2026-07-03): COMPLETE — all four phases are done.**
+>
+> - [x] **Phase 1 (foundations):** ByteStreamOut streams, ArithmeticEncoder, IntegerCompressor compress side — byte-exact vs the decoder round-trips.
+> - [x] **Phase 2 (pf 0–5):** raw + v2 item writers, LASwritePoint, chunk table, `LASzip.Pack()` — byte-exact vs the C++ `.laz` goldens.
+> - [x] **Phase 3 (pf 6–10):** v3/v4 layered writers incl. multi-scanner-channel semantics — byte-exact vs the cpporacle goldens.
+> - [x] **Phase 4 (public API):** `writer.go` (`Create`/`NewWriter`/`WritePoint`/`Chunk`/`SetCoordinates`/`Close`), header + VLR serialization, LASzip VLR emission, inventory patch-back on close, point setters + `NewPoint` — public-level byte-exactness proven in `writer_test.go`.
+>
+> Still deferred (out of scope for v1): v1 item writers (except WAVEPACKET13, which is
+> always item-version 1 and IS supported — it unlocks pf 4/5/9/10 output), compatibility-mode
+> output, POINTWISE (non-chunked) writing, EVLR writing, LAX index.
+
 Plan for porting the write/compression side of LASzip to Go, based on a deep dive of the
 C++ writer sources (`arithmeticencoder.cpp`, `integercompressor.cpp`, `laswritepoint.cpp`,
 `laswriteitemcompressed_v1..v4.cpp`, `laszipper.cpp`, `laszip.cpp`, `laszip_dll.cpp` writer path,

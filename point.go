@@ -159,6 +159,87 @@ type Point struct {
 }
 
 // ---------------------------------------------------------------------------
+// Construction and setters (for writing)
+// ---------------------------------------------------------------------------
+
+// NewPoint returns a fresh Point for the given LAS point data format (0-10),
+// with the format's optional-field presence bits preset so the Has*()
+// helpers answer correctly. Extra-byte presence is toggled separately by
+// SetExtraBytes. Universal fields (X/Y/Z, RawX/RawY/RawZ, Intensity,
+// Classification, …) are exported and can be assigned directly; optional
+// fields are assigned through the Set* methods.
+//
+// A Point built this way is typically handed to Writer.SetCoordinates and
+// then Writer.WritePoint.
+func NewPoint(format uint8) *Point {
+	return &Point{
+		format:  format,
+		present: pointPresentFor(format, 0),
+	}
+}
+
+// SetGPSTime sets the GPS time value and marks it present, so HasGPSTime()
+// and GPSTime() reflect the assignment.
+func (p *Point) SetGPSTime(t float64) {
+	p.gpsTime = t
+	p.present |= presentGPS
+}
+
+// SetRGB sets the red, green, and blue channel values and marks colour
+// present, so HasRGB() and RGB() reflect the assignment.
+func (p *Point) SetRGB(r, g, b uint16) {
+	p.red, p.green, p.blue = r, g, b
+	p.present |= presentColor
+}
+
+// SetNIR sets the Near Infrared value and marks it present, so HasNIR()
+// and NIR() reflect the assignment.
+func (p *Point) SetNIR(v uint16) {
+	p.nir = v
+	p.present |= presentNIR
+}
+
+// SetScannerChannel sets the scanner channel (a 2-bit field: values above 3
+// are masked to the low two bits) and marks the LAS 1.4 extended fields
+// present, so HasScannerChannel() and ScannerChannel() reflect the
+// assignment. Only meaningful for point formats 6-10.
+func (p *Point) SetScannerChannel(c uint8) {
+	p.scannerChannel = c & 0x03
+	p.present |= presentExtended
+}
+
+// SetWavepacket sets all waveform packet fields and marks them present, so
+// HasWavepacket() and the wave getters reflect the assignment. Only
+// meaningful for point formats 4, 5, 9, and 10.
+func (p *Point) SetWavepacket(index uint8, offset uint64, size uint32, location, xt, yt, zt float32) {
+	p.waveIdx = index
+	p.waveOffset = offset
+	p.waveSize = size
+	p.waveLoc = location
+	p.waveXt, p.waveYt, p.waveZt = xt, yt, zt
+	p.present |= presentWave
+}
+
+// SetExtraBytes sets the point's extra-byte payload and marks extra bytes
+// present (or clears the presence bit when b is empty or nil).
+//
+// The bytes are COPIED into a freshly allocated slice: b may safely alias
+// Reader-owned memory (e.g. another point's ExtraBytes()) and may be reused
+// or mutated by the caller afterwards. When writing, the Writer zero-pads
+// or truncates the payload to the header's ExtraByteCount.
+func (p *Point) SetExtraBytes(b []byte) {
+	if len(b) == 0 {
+		p.extraBuf = nil
+		p.present &^= presentExtraB
+		return
+	}
+	// Deliberately never reuse p.extraBuf's capacity: it may alias a
+	// Reader's shared decode buffer, which must not be written to.
+	p.extraBuf = append([]byte(nil), b...)
+	p.present |= presentExtraB
+}
+
+// ---------------------------------------------------------------------------
 // Presence helpers
 // ---------------------------------------------------------------------------
 
