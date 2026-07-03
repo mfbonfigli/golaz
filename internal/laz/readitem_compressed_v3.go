@@ -622,7 +622,10 @@ func (r *LASreadItemCompressedPoint14v3) Read(item []byte, context *uint32) erro
 		legacyRN = uint8(rVal)
 		legacyNR = uint8(n)
 	}
-	lastItem[14] = (lastItem[14] & 0xC0) | legacyRN | (legacyNR << 3)
+	// Mask to 3 bits like the C++ bitfield assignment truncates: for
+	// out-of-spec data (extended return number > 7 with number of returns
+	// <= 7) legacyRN would otherwise spill into the legacyNR bits.
+	lastItem[14] = (lastItem[14] & 0xC0) | (legacyRN & 0x07) | ((legacyNR & 0x07) << 3)
 
 	// Get return map m (6-context) and level l (8-context)
 	m := uint32(NumberReturnMap6ctx[n][rVal])

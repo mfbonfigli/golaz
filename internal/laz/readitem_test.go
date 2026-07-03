@@ -181,7 +181,7 @@ func TestReadItemRawPoint14LE(t *testing.T) {
 		ExpByte14   uint8 // return_number:3|nreturns:3|scan_dir:1|eofl:1
 		ExpClass    uint8 // merged classification
 		ExpSARank   int8  // scan angle rank
-		ExpByte22   uint8 // pt:2|scanner_ch:2|class_flags:4
+		ExpByte22   uint8 // ext_point_type(=1):2|scanner_ch:2|class_flags:4
 		ExpExtClass uint8 // extended classification (byte 23)
 		ExpByte24   uint8 // extended rn:4|extended nr:4 (byte 24)
 	}
@@ -189,34 +189,34 @@ func TestReadItemRawPoint14LE(t *testing.T) {
 	tests := []testCase{
 		// TC1: simple valid 3-bit returns
 		{1000, 2000, 500, 128, 1, 3, 0, 0, 0, 0, 5, 42, -30, 1234, 123456789.0,
-			0x19, 0x05, 0, 0x00, 5, 0x31},
+			0x19, 0x05, 0, 0x01, 5, 0x31},
 		// TC2: num_returns > 7 clamped, rn=1 < nr so rn=1 nr=7
 		{0, 0, 0, 0, 1, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
-			0x39, 0x00, 0, 0x00, 0, 0x91},
+			0x39, 0x00, 0, 0x01, 0, 0x91},
 		// TC3: rn=7 nr=8 → nr=7, rn=6
 		{0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
-			0x3E, 0x00, 0, 0x00, 0, 0x87},
+			0x3E, 0x00, 0, 0x01, 0, 0x87},
 		// TC4: rn=8 nr=8 → nr=7, rn=7 (since rn >= nr)
 		{0, 0, 0, 0, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
-			0x3F, 0x00, 0, 0x00, 0, 0x88},
+			0x3F, 0x00, 0, 0x01, 0, 0x88},
 		// TC5: rn=0 nr=3 pass-through
 		{0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
-			0x18, 0x00, 0, 0x00, 0, 0x30},
+			0x18, 0x00, 0, 0x01, 0, 0x30},
 		// TC6: scan_direction=1, eofl=1
 		{0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0.0,
-			0xC9, 0x00, 0, 0x00, 0, 0x11},
+			0xC9, 0x00, 0, 0x01, 0, 0x11},
 		// TC7: class_flags=3, classification=63 (>=32, not merged)
 		{0, 0, 0, 0, 1, 1, 3, 0, 0, 0, 63, 0, 0, 0, 0.0,
-			0x09, 0x60, 0, 0x30, 63, 0x11},
+			0x09, 0x60, 0, 0x31, 63, 0x11},
 		// TC8: scan_angle=-30000 → -180.0 → rank=-128
 		{0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, -30000, 0, 0.0,
-			0x09, 0x00, -128, 0x00, 0, 0x11},
-		// TC9: max fields: scanner_ch=3, class_flags=15 → byte22=0xFC
+			0x09, 0x00, -128, 0x01, 0, 0x11},
+		// TC9: max fields: scanner_ch=3, class_flags=15 → byte22=0xFD (incl. ext_point_type bit)
 		{2147483647, 2147483647, 2147483647, 65535, 15, 15, 15, 3, 1, 1, 255, 255, 18000, 65535, 999999999.5,
-			0xFF, 0xE0, 108, 0xFC, 255, 0xFF},
-		// TC10: scanner_ch=1, class_flags=1 → byte22=0x14
+			0xFF, 0xE0, 108, 0xFD, 255, 0xFF},
+		// TC10: scanner_ch=1, class_flags=1 → byte22=0x15 (incl. ext_point_type bit)
 		{500000, 4000000, 1500, 1024, 2, 4, 1, 1, 0, 0, 6, 128, 10, 56, 360000.123,
-			0x22, 0x26, 0, 0x14, 6, 0x42},
+			0x22, 0x26, 0, 0x15, 6, 0x42},
 	}
 
 	for i, tc := range tests {

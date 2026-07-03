@@ -212,7 +212,10 @@ func (r *LASreadItemRawPoint14LE) Read(item []byte, _ *uint32) error {
 	binary.LittleEndian.PutUint16(item[20:22], uint16(scanAngle))
 
 	// Byte 22: extended_point_type:2 | extended_scanner_channel:2 | extended_classification_flags:4
-	item[22] = ((scannerCh & 0x03) << 2) | ((classFlags & 0x0F) << 4)
+	// extended_point_type is set to 1: this is a native LAS 1.4 point. The
+	// C++ DLL guarantees the same in-memory (laszip_prepare_point_for_write)
+	// and the raw POINT14 writer branches on it to pick the 16-bit scan angle.
+	item[22] = 0x01 | ((scannerCh & 0x03) << 2) | ((classFlags & 0x0F) << 4)
 
 	// Byte 23: extended classification
 	item[23] = classification
