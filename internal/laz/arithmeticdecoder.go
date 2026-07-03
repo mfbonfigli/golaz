@@ -298,13 +298,17 @@ func (d *ArithmeticDecoder) ReadBit() (uint32, error) {
 		}
 	}
 
+	if sym >= 2 {
+		// C++ arithmeticdecoder.cpp throws 4711 here: only a corrupt stream
+		// can push the decoded symbol out of range.
+		return 0, fmt.Errorf("readBit: decoded symbol %d out of range (corrupt stream)", sym)
+	}
 	return sym, nil
 }
 
 // ReadBits decodes 'bits' bits without modelling.
-// C++: returns (U32)sym directly — no bounds check (the integer division
-// value/length can legally produce sym slightly outside [0, 1<<bits) at
-// arithmetic interval boundaries; the decoder state remains consistent).
+// Out-of-range symbols indicate a corrupt stream and return an error,
+// matching the integrity checks in C++ arithmeticdecoder.cpp.
 func (d *ArithmeticDecoder) ReadBits(bits uint32) (uint32, error) {
 	if bits == 0 || bits > 32 {
 		return 0, fmt.Errorf("readBits: invalid bit count %d", bits)
@@ -330,7 +334,9 @@ func (d *ArithmeticDecoder) ReadBits(bits uint32) (uint32, error) {
 		return result, nil
 	}
 
-	d.trace(fmt.Sprintf("ReadBits(%d)_before", bits), 0)
+	if d.Debug {
+		d.trace(fmt.Sprintf("ReadBits(%d)_before", bits), 0)
+	}
 
 	d.length >>= bits
 	sym := d.value / d.length // decode symbol, change length
@@ -347,6 +353,9 @@ func (d *ArithmeticDecoder) ReadBits(bits uint32) (uint32, error) {
 		}
 	}
 
+	if sym >= uint32(1)<<bits {
+		return 0, fmt.Errorf("readBits(%d): decoded symbol %d out of range (corrupt stream)", bits, sym)
+	}
 	return sym, nil
 }
 
@@ -369,6 +378,9 @@ func (d *ArithmeticDecoder) ReadByte() (byte, error) {
 		}
 	}
 
+	if sym >= 1<<8 {
+		return 0, fmt.Errorf("readByte: decoded symbol %d out of range (corrupt stream)", sym)
+	}
 	return byte(sym), nil
 }
 
@@ -391,6 +403,9 @@ func (d *ArithmeticDecoder) ReadShort() (uint16, error) {
 		}
 	}
 
+	if sym >= 1<<16 {
+		return 0, fmt.Errorf("readShort: decoded symbol %d out of range (corrupt stream)", sym)
+	}
 	return uint16(sym), nil
 }
 

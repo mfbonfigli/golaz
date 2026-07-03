@@ -64,7 +64,14 @@ type Reader struct {
 	scaleX, scaleY, scaleZ    float64
 	offsetX, offsetY, offsetZ float64
 	present                   pointPresent // precomputed from format + extraByteCount
-	isPoint14                 bool         // pf6–10
+	isPoint14                 bool         // pf6–10 (on-disk layout)
+
+	// diskFormat is the point format of the on-disk records. It differs from
+	// Header.PointDataFormat only for compatibility-mode files, where the
+	// header presents the reconstructed LAS 1.4 format (6-10) while the
+	// records remain in their legacy layout (1/3/4/5).
+	diskFormat uint8
+	compat     *compatState // non-nil when compatibility-mode reconstruction is active
 
 	// read state
 	pointCount  uint64
@@ -124,7 +131,7 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 	r.offsetX, r.offsetY, r.offsetZ = h.OffsetX, h.OffsetY, h.OffsetZ
 
 	// ── 2. Read all VLRs ─────────────────────────────────────────────────
-	vlrs, laszipData, err := readAllVLRs(rs, h.HeaderSize, h.NumberOfVLRs)
+	vlrs, laszipData, err := readAllVLRs(rs, h.HeaderSize, h.NumberOfVLRs, h.OffsetToPointData)
 	if err != nil {
 		return nil, err
 	}
@@ -136,8 +143,17 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 		if err := lz.Unpack(laszipData); err != nil {
 			return nil, fmt.Errorf("unpack LASzip VLR: %w", err)
 		}
+		if err := lz.Check(h.PointDataRecordLength); err != nil {
+			return nil, fmt.Errorf("invalid LASzip VLR: %w", err)
+		}
 		r.lz = lz
 		r.header.IsCompressed = true
+	} else if h.compressionBits != 0 {
+		// The point data format byte marks the file as LAZ-compressed but no
+		// LASzip VLR exists; decoding the records as raw points would yield
+		// garbage (C++ laszip_dll errors here too).
+		return nil, fmt.Errorf("point data format byte %#02x has compression bits set but the file has no LASzip VLR",
+			h.compressionBits|h.PointDataFormat)
 	}
 
 	// ── 4. Build LASzip config (or raw config for uncompressed) ──────────
@@ -153,6 +169,16 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 			h.PointDataFormat, h.PointDataRecordLength, laz.LASZIP_COMPRESSOR_NONE,
 		); err != nil {
 			return nil, fmt.Errorf("setup raw LAS config: %w", err)
+		}
+		// The record length must cover every item of the declared point
+		// format: an undersized record would make Scan read out of bounds.
+		var total uint16
+		for i := uint16(0); i < lzCfg.NumItems; i++ {
+			total += lzCfg.Items[i].Size
+		}
+		if total != h.PointDataRecordLength {
+			return nil, fmt.Errorf("point data record length %d does not match point format %d item total %d",
+				h.PointDataRecordLength, h.PointDataFormat, total)
 		}
 	}
 
@@ -180,6 +206,7 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 	}
 	r.present = pointPresentFor(h.PointDataFormat, r.extraByteCount)
 	r.isPoint14 = h.PointDataFormat >= 6
+	r.diskFormat = h.PointDataFormat
 
 	// ── 7. Parse ExtraByteDescriptor VLR if present ───────────────────────
 	for _, v := range vlrs {
@@ -215,6 +242,11 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 			}
 			break
 		}
+	}
+
+	// ── 7b. Compatibility-mode detection (laszip -compatible files) ───────
+	if cfg.compatibilityMode {
+		r.setupCompatibility()
 	}
 
 	// ── 8. Set up LASreadPoint ────────────────────────────────────────────
@@ -376,12 +408,12 @@ func (r *Reader) EVLRs() ([]EVLR, error) {
 	// Adjust for the bufio read-ahead: the logical position is
 	// (kernel pos) - (buffered bytes), already handled by ByteStreamInReader.Tell.
 	// We need the actual seek position, so we use r.rs directly (not r.stream).
+	// readAllEVLRs restores the kernel position to savePos, so the decode
+	// stream's buffered state (owned by LASreadPoint) remains coherent.
 	evlrs, err := readAllEVLRs(r.rs, evlrOffset, evlrCount, savePos)
 	if err != nil {
 		return nil, err
 	}
-	// Reinitialise the bufio wrapper after the seek-around.
-	r.stream = laz.NewByteStreamInReader(r.rs)
 	r.evlrs = evlrs
 	r.evlrsLoaded = true
 	return r.evlrs, nil
@@ -404,6 +436,12 @@ func (r *Reader) ExtraByteDescriptors() []ExtraByteDescriptor { return r.extraBy
 // Scan decodes the next point into p. Returns io.EOF when all points have
 // been read. The point is valid until the next Scan or Next call.
 // Zero allocations on the hot path.
+//
+// Corrupt-chunk recovery: when a decode error occurs inside a compressed
+// chunk and the file's chunk table is intact, the reader repositions itself
+// at the next chunk before returning the error — a subsequent Scan resumes
+// there, salvaging the remaining healthy chunks. The points skipped this way
+// are not renumbered: Tell() keeps counting successfully decoded points.
 func (r *Reader) Scan(p *Point) error {
 	if r.pointCount >= r.totalPoints {
 		return io.EOF
@@ -415,7 +453,7 @@ func (r *Reader) Scan(p *Point) error {
 
 	populatePoint(
 		p,
-		r.header.PointDataFormat,
+		r.diskFormat,
 		r.present,
 		r.flatBuf,
 		r.onDiskBuf,
@@ -424,6 +462,9 @@ func (r *Reader) Scan(p *Point) error {
 		r.scaleX, r.scaleY, r.scaleZ,
 		r.offsetX, r.offsetY, r.offsetZ,
 	)
+	if r.compat != nil {
+		reconstructCompat(p, r.compat)
+	}
 	return nil
 }
 

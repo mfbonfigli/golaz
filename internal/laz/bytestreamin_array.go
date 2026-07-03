@@ -25,6 +25,7 @@ package laz
 
 import (
 	"fmt"
+	"io"
 )
 
 // ByteStreamInArray implements ByteStreamIn backed by an in-memory []byte slice.
@@ -48,7 +49,9 @@ func (s *ByteStreamInArray) Init(data []byte) {
 
 func (s *ByteStreamInArray) GetByte() (byte, error) {
 	if s.pos >= int64(len(s.data)) {
-		return 0, fmt.Errorf("getByte: EOF")
+		// Wraps io.EOF so over-reads classify as end-of-file, matching the
+		// C++ ByteStreamInArray which throws EOF.
+		return 0, fmt.Errorf("getByte: %w", io.EOF)
 	}
 	b := s.data[s.pos]
 	s.pos++
@@ -58,7 +61,7 @@ func (s *ByteStreamInArray) GetByte() (byte, error) {
 func (s *ByteStreamInArray) GetBytes(buf []byte) error {
 	n := len(buf)
 	if s.pos+int64(n) > int64(len(s.data)) {
-		return fmt.Errorf("getBytes: unexpected EOF at %d, need %d, have %d", s.pos, n, len(s.data))
+		return fmt.Errorf("getBytes: at %d, need %d, have %d: %w", s.pos, n, len(s.data), io.ErrUnexpectedEOF)
 	}
 	copy(buf, s.data[s.pos:s.pos+int64(n)])
 	s.pos += int64(n)

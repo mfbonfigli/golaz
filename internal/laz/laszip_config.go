@@ -180,6 +180,10 @@ func (lz *LASzip) Unpack(data []byte) error {
 		return fmt.Errorf("wrong byte count")
 	}
 	expectedNumItems := (len(data) - 34) / 6
+	if expectedNumItems == 0 {
+		// C++ laszip.cpp: "zero items to unpack"
+		return fmt.Errorf("zero items to unpack")
+	}
 
 	lz.Compressor = binary.LittleEndian.Uint16(data[0:2])
 	lz.Coder = binary.LittleEndian.Uint16(data[2:4])
@@ -355,7 +359,28 @@ func (lz *LASzip) IsStandard(pointType *uint8, recordLength *uint16) bool {
 				}
 				return true
 			}
-			if items[2].IsType(LASITEM_BYTE) || items[2].IsType(LASITEM_BYTE14) {
+			// Point format 10: POINT14 + RGBNIR14 + WAVEPACKET14 (+ BYTE).
+			// DELIBERATE DIVERGENCE from upstream: C++ laszip.cpp is_standard
+			// tests items[1] for WAVEPACKET14 where items[2] is meant (an
+			// indexing typo), so it reports genuine pf10 item sets as
+			// non-standard. golaz applies the intended check; the golden-data
+			// comparison in laszip_config_test.go carves out this case.
+			if items[2].IsType(LASITEM_WAVEPACKET13) || items[2].IsType(LASITEM_WAVEPACKET14) {
+				if lz.NumItems == 3 {
+					if pointType != nil {
+						*pointType = 10
+					}
+					return true
+				}
+				if items[3].IsType(LASITEM_BYTE) || items[3].IsType(LASITEM_BYTE14) {
+					if lz.NumItems == 4 {
+						if pointType != nil {
+							*pointType = 10
+						}
+						return true
+					}
+				}
+			} else if items[2].IsType(LASITEM_BYTE) || items[2].IsType(LASITEM_BYTE14) {
 				if lz.NumItems == 3 {
 					if pointType != nil {
 						*pointType = 8
@@ -363,8 +388,6 @@ func (lz *LASzip) IsStandard(pointType *uint8, recordLength *uint16) bool {
 					return true
 				}
 			}
-			// Point format 10 contains WAVEPACKET14 here, but it is explicitly omitted
-			// from native C++ laszip::is_standard() mapping matrices.
 		} else if (items[1].IsType(LASITEM_WAVEPACKET13) || items[1].IsType(LASITEM_WAVEPACKET14)) && items[1].Size == 29 {
 			if lz.NumItems == 2 {
 				if pointType != nil {
@@ -450,6 +473,13 @@ func (lz *LASzip) checkItems(pointSize uint16) error {
 		return fmt.Errorf("point has size of %d but items only add up to %d bytes", pointSize, total)
 	}
 	return nil
+}
+
+// Check validates compressor, coder, and all items against the point record
+// size from the LAS header. C++ original: LASzip::check(U16 point_size),
+// called by laszip_dll.cpp before creating the point reader.
+func (lz *LASzip) Check(pointSize uint16) error {
+	return lz.check(pointSize)
 }
 
 // check validates compressor, coder, and all items.

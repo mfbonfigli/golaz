@@ -25,6 +25,7 @@ package laz
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strings"
@@ -158,7 +159,9 @@ func OpenLASSelective(filename string, decompressSelective uint32) (*LASunzipper
 // parseHeader reads the LAS 1.x header.
 func (u *LASunzipper) parseHeader() error {
 	buf := make([]byte, 375)
-	if _, err := u.file.Read(buf); err != nil {
+	// Files smaller than 375 bytes (pre-1.4 headers) still parse: only the
+	// fields present in the returned prefix are accessed for those versions.
+	if _, err := io.ReadFull(u.file, buf); err != nil && err != io.ErrUnexpectedEOF {
 		return fmt.Errorf("read header: %w", err)
 	}
 
@@ -196,16 +199,17 @@ func (u *LASunzipper) parseHeader() error {
 			return fmt.Errorf("seek to vlr %d: %w", i, err)
 		}
 		vlrBuf := make([]byte, 54)
-		if _, err := u.file.Read(vlrBuf); err != nil {
+		if _, err := io.ReadFull(u.file, vlrBuf); err != nil {
 			return fmt.Errorf("read vlr %d: %w", i, err)
 		}
 		recordLen := binary.LittleEndian.Uint16(vlrBuf[20:22])
 		offset += 54 + int64(recordLen)
 
 		userID := strings.TrimRight(string(vlrBuf[2:18]), "\x00")
-		if userID == "laszip encoded" {
+		recordID := binary.LittleEndian.Uint16(vlrBuf[18:20])
+		if userID == "laszip encoded" && recordID == 22204 {
 			data := make([]byte, recordLen)
-			if _, err := u.file.Read(data); err != nil {
+			if _, err := io.ReadFull(u.file, data); err != nil {
 				return fmt.Errorf("read laszip vlr data: %w", err)
 			}
 			u.lz = NewLASzip()

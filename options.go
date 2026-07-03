@@ -94,10 +94,14 @@ type Option func(*readerConfig)
 type readerConfig struct {
 	selectiveMask    SelectiveMask
 	maskExplicitlySet bool
+	compatibilityMode bool
 }
 
 func defaultConfig() readerConfig {
-	return readerConfig{} // selectiveMask defaults to SelectiveAll when not set
+	return readerConfig{
+		// selectiveMask defaults to SelectiveAll when not set.
+		compatibilityMode: true,
+	}
 }
 
 // WithSelectiveMask adds attributes to the selective decompression mask.
@@ -122,5 +126,26 @@ func WithSelectiveMask(mask SelectiveMask) Option {
 			// Subsequent calls: accumulate.
 			cfg.selectiveMask |= mask
 		}
+	}
+}
+
+// WithCompatibilityMode controls LAS 1.4 compatibility-mode reconstruction
+// for files written by `laszip -compatible` (point formats 6-10 recoded as
+// formats 1/3/4/5 plus "LAS 1.4 ..." extra-byte attributes and a
+// lascompatible VLR).
+//
+// When enabled (the default), such files are transparently presented as
+// native LAS 1.4: the header reports the original point format 6-10, points
+// carry 16-bit scan angles, 4-bit return counts, full 8-bit classifications,
+// scanner channel, overlap flag, and NIR, and the compatibility attributes
+// are hidden from ExtraBytes. When disabled, the file is read exactly as
+// stored on disk (format 1/3/4/5 with raw extra bytes).
+//
+// Note: the LASzip C DLL requires an explicit laszip_request_compatibility_mode
+// call to enable reconstruction; golaz enables it by default because the
+// reconstructed form is what such files are meant to represent.
+func WithCompatibilityMode(enabled bool) Option {
+	return func(cfg *readerConfig) {
+		cfg.compatibilityMode = enabled
 	}
 }

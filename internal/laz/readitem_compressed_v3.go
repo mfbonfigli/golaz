@@ -538,6 +538,12 @@ func (r *LASreadItemCompressedPoint14v3) Read(item []byte, context *uint32) erro
 			r.createAndInitModelsDecompressors(newSC, lastItem)
 		}
 		r.currentContext = newSC
+		// v3 propagates the context to the other layered items ONLY when the
+		// scanner channel changed (C++ lasreaditemcompressed_v3.cpp sets
+		// `context = current_context` inside this branch; the caller resets
+		// context to 0 for every point). Moving this assignment outside the
+		// branch is the v4 fix and must NOT be applied to v3 streams.
+		*context = r.currentContext
 		c = &r.contexts[r.currentContext]
 		lastItem = c.LastItem[:]
 		// Persist scanner_channel in byte 22 bits 2-3 of saved context
@@ -812,8 +818,6 @@ func (r *LASreadItemCompressedPoint14v3) Read(item []byte, context *uint32) erro
 	binary.LittleEndian.PutUint32(item[28:32], oldDeleted)
 	// Persist gps_time_change for next point in context struct (not in output buffer)
 	c.GPSTimeChange = gpsTimeChange
-	// C++: context = current_context; // the POINT14 reader sets context for all other items
-	*context = r.currentContext
 	return nil
 }
 

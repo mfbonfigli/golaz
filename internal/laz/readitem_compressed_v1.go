@@ -59,7 +59,7 @@ func NewLASreadItemCompressedPoint10v1(dec *ArithmeticDecoder) *LASreadItemCompr
 	r.icDY = NewIntegerDecompressor(dec, 32, 20, 8, 0)
 	r.icZ = NewIntegerDecompressor(dec, 32, 20, 8, 0)
 	r.icIntensity = NewIntegerDecompressor(dec, 16, 1, 8, 0)
-	r.icScanAngleRank = NewIntegerDecompressor(dec, 8, 2, 4, 0)
+	r.icScanAngleRank = NewIntegerDecompressor(dec, 8, 2, 8, 0)
 	r.icPointSourceID = NewIntegerDecompressor(dec, 16, 1, 8, 0)
 	r.mChangedValues = dec.CreateSymbolModel(64)
 	return r
@@ -353,7 +353,7 @@ type LASreadItemCompressedRGB12v1 struct {
 func NewLASreadItemCompressedRGB12v1(dec *ArithmeticDecoder) *LASreadItemCompressedRGB12v1 {
 	r := &LASreadItemCompressedRGB12v1{dec: dec}
 	r.mByteUsed = dec.CreateSymbolModel(64)
-	r.icRGB = NewIntegerDecompressor(dec, 8, 6, 4, 0)
+	r.icRGB = NewIntegerDecompressor(dec, 8, 6, 8, 0)
 	return r
 }
 
@@ -570,7 +570,7 @@ type LASreadItemCompressedBytev1 struct {
 func NewLASreadItemCompressedBytev1(dec *ArithmeticDecoder, number uint32) *LASreadItemCompressedBytev1 {
 	r := &LASreadItemCompressedBytev1{dec: dec, number: number}
 	r.lastItem = make([]byte, number)
-	r.icByte = NewIntegerDecompressor(dec, 8, number, 4, 0)
+	r.icByte = NewIntegerDecompressor(dec, 8, number, 8, 0)
 	return r
 }
 

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,6 +74,11 @@ type Header struct {
 	numberOfEVLRs      uint32 // LAS 1.4+
 	hasWaveformData    bool
 	hasEVLRFields      bool
+
+	// compressionBits holds bits 6-7 of the on-disk point data format byte.
+	// Bit 7 (and historically bit 6) marks LAZ compression; the Reader
+	// requires a LASzip VLR when either is set.
+	compressionBits uint8
 }
 
 // WaveformDataOffset returns the byte offset in the file to waveform data packets.
@@ -117,9 +121,9 @@ func (h *Header) GPSTimeIsStandard() bool {
 
 // HasWKTCRS reports whether a WKT CRS VLR is present in the file.
 // Valid only for LAS 1.4+; always false for older versions.
-// Determined by GlobalEncoding bit 2.
+// Determined by GlobalEncoding bit 4 (0x10) per the LAS 1.4 spec.
 func (h *Header) HasWKTCRS() bool {
-	return h.hasEVLRFields && (h.GlobalEncoding&0x04 != 0)
+	return h.hasEVLRFields && (h.GlobalEncoding&0x10 != 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +145,18 @@ func parseHeader(rs io.ReadSeeker) (*Header, error) {
 		return nil, fmt.Errorf("not a LAS file: bad file signature %q", string(minBuf[0:4]))
 	}
 	headerSize := binary.LittleEndian.Uint16(minBuf[94:96])
-	if headerSize < 96 {
-		return nil, fmt.Errorf("invalid header size %d (minimum 96)", headerSize)
+	// Minimum sizes per LAS spec (and enforced by laszip_dll.cpp):
+	// 227 for LAS <= 1.2, 235 for 1.3, 375 for 1.4+.
+	versionMinor := minBuf[25]
+	minHeaderSize := uint16(227)
+	switch {
+	case versionMinor >= 4:
+		minHeaderSize = 375
+	case versionMinor == 3:
+		minHeaderSize = 235
+	}
+	if headerSize < minHeaderSize {
+		return nil, fmt.Errorf("invalid header size %d for LAS 1.%d (minimum %d)", headerSize, versionMinor, minHeaderSize)
 	}
 
 	// Step 2: seek back and read exactly headerSize bytes.
@@ -164,14 +178,15 @@ func parseHeader(rs io.ReadSeeker) (*Header, error) {
 	copy(h.ProjectIDGUID4[:], buf[16:24])
 	h.VersionMajor = buf[24]
 	h.VersionMinor = buf[25]
-	h.SystemIdentifier = strings.TrimRight(string(buf[26:58]), "\x00")
-	h.GeneratingSoftware = strings.TrimRight(string(buf[58:90]), "\x00")
+	h.SystemIdentifier = cString(buf[26:58])
+	h.GeneratingSoftware = cString(buf[58:90])
 	h.FileCreationDayOfYear = binary.LittleEndian.Uint16(buf[90:92])
 	h.FileCreationYear = binary.LittleEndian.Uint16(buf[92:94])
 	h.HeaderSize = headerSize
 	h.OffsetToPointData = binary.LittleEndian.Uint32(buf[96:100])
 	h.NumberOfVLRs = binary.LittleEndian.Uint32(buf[100:104])
-	h.PointDataFormat = buf[104] & 0x3F // strip LAZ compression bit if set
+	h.compressionBits = buf[104] & 0xC0 // LAZ compression bits (checked against the LASzip VLR later)
+	h.PointDataFormat = buf[104] & 0x3F
 	h.PointDataRecordLength = binary.LittleEndian.Uint16(buf[105:107])
 
 	// Legacy point count (uint32 at offset 107).

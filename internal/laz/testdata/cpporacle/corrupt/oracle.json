@@ -1,0 +1,5 @@
+{
+  "chunked_tableoffset_minus1.laz": {"open_ok": true, "points_ok": 1000, "error_at": null, "matches_las": true, "error": null, "warning": "chunk table and 586053464540 bytes are missing. LAZ file truncated during copy or transfer?"},
+  "chunked_tableoffset_garbage.laz": {"open_ok": true, "points_ok": 1000, "error_at": null, "matches_las": true, "error": null, "warning": "corrupt chunk table"},
+  "chunked_truncated.laz": {"open_ok": true, "points_ok": 600, "error_at": 600, "matches_las": true, "error": "end-of-file during chunk with index 6", "warning": "chunk table and 11202 bytes are missing. LAZ file truncated during copy or transfer?"}
+}

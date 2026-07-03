@@ -21,13 +21,15 @@ GoLaz is a **pure Go** library for reading **LAS** and **LAZ** (compressed LAS) 
 
 | Feature | Details |
 |---|---|
-| **LAS versions** | 1.2, 1.3, 1.4, 1.5 (experimental) |
+| **LAS versions** | 1.0 – 1.4, 1.5 (experimental) |
 | **Point formats** | 0 – 10 |
-| **Compression** | Uncompressed `.las` and LASzip-compressed `.laz` |
+| **Compression** | Uncompressed `.las` and LASzip-compressed `.laz` (all compressor variants: pointwise, chunked, layered; item versions 1 – 4) |
+| **Compatibility mode** | Files written by `laszip -compatible` are transparently presented as native LAS 1.4 (disable with `WithCompatibilityMode(false)`) |
 | **Extra bytes** | Named extra-byte attributes with typed access |
 | **CRS metadata** | WKT (OGC), GeoTIFF key directory, `CRS()` helper |
 | **Selective decode** | Skip unused layers for faster I/O on LAS 1.4 v3/v4 files |
 | **Seeking** | Random-access seek to any point by index |
+| **Corruption recovery** | Corrupt or missing chunk tables and damaged chunks are recovered like the C++ reference: healthy chunks remain readable |
 
 GoLaz currently focuses on reading. Writing is not yet supported (but contributions are welcome).
 

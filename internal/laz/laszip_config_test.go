@@ -151,6 +151,20 @@ func TestLASzipConfigRoundtrip(t *testing.T) {
 	}
 
 	// Phase 3: Execute Assertions across clean arrays
+	// isUpstreamPF10Quirk reports whether items form a genuine point-format-10
+	// set (POINT14 + RGBNIR14 + WAVEPACKET14 [+ BYTE*]) — the one combination
+	// where upstream C++ is_standard returns false due to an indexing typo and
+	// golaz deliberately diverges.
+	isUpstreamPF10Quirk := func(items []LASitem) bool {
+		if len(items) != 3 && len(items) != 4 {
+			return false
+		}
+		if !items[0].IsType(LASITEM_POINT14) || !items[1].IsType(LASITEM_RGBNIR14) || !items[2].IsType(LASITEM_WAVEPACKET14) {
+			return false
+		}
+		return len(items) == 3 || items[3].IsType(LASITEM_BYTE) || items[3].IsType(LASITEM_BYTE14)
+	}
+
 	for _, tcItem := range configTests {
 		t.Run(fmt.Sprintf("tc%d_pt%d_sz%d_c%d", tcItem.ID, tcItem.PointType, tcItem.PointSize, tcItem.Compressor), func(t *testing.T) {
 			goItems, goRecordLen, goErr := Setup(tcItem.PointType, tcItem.PointSize, tcItem.Compressor)
@@ -185,6 +199,19 @@ func TestLASzipConfigRoundtrip(t *testing.T) {
 
 			goIsStd := lzTmp.IsStandard(&goPt, &goRl)
 			if tcItem.CppIsStd != goIsStd {
+				if !tcItem.CppIsStd && goIsStd && isUpstreamPF10Quirk(goItems) {
+					// Known upstream bug: C++ is_standard tests items[1] for
+					// WAVEPACKET14 where items[2] is meant, so the golden data
+					// records genuine pf10 item sets as non-standard. golaz
+					// deliberately applies the intended check (see IsStandard).
+					if goPt != 10 {
+						t.Errorf("pf10 carve-out: pointType = %d, want 10", goPt)
+					}
+					if goRl != goRecordLen {
+						t.Errorf("pf10 carve-out: recordLength from Setup=%d != isStandardItems=%d", goRecordLen, goRl)
+					}
+					return
+				}
 				t.Errorf("is_standard mismatch: C++=%v Go=%v", tcItem.CppIsStd, goIsStd)
 			}
 

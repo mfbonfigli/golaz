@@ -25,7 +25,9 @@ package laz
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 )
@@ -74,10 +76,13 @@ type LASreadPoint struct {
 
 // NewLASreadPoint creates a new orchestrator with the given selective
 // decompression mask.
+// numberChunks starts at 0 (like the C++ constructor); Setup raises it to
+// MaxUint32 for chunked compressors only. POINTWISE (compressor 1) streams
+// have no chunk table, and initDec must not try to read one for them.
 func NewLASreadPoint(decompressSelective uint32) *LASreadPoint {
 	return &LASreadPoint{
 		chunkSize:           math.MaxUint32,
-		numberChunks:        math.MaxUint32,
+		numberChunks:        0,
 		decompressSelective: decompressSelective,
 	}
 }
@@ -142,6 +147,12 @@ func (rp *LASreadPoint) Setup(numItems uint32, items []LASitem, lz *LASzip) erro
 
 		var seekBuf []byte
 		if rp.layeredLAS14Compression {
+			// Layered streams always lead with a POINT14 item (guaranteed by
+			// LASzip::setup in the C++ writer); seekBuf[22] below marks the
+			// extended point type in that item's slot.
+			if items[0].Type != LASITEM_POINT14 {
+				return fmt.Errorf("layered compressor requires a POINT14 first item, got type %d", items[0].Type)
+			}
 			seekBuf = make([]byte, rp.pointSize*2)
 			seekBuf[22] = 1
 		} else {
@@ -151,10 +162,9 @@ func (rp *LASreadPoint) Setup(numItems uint32, items []LASitem, lz *LASzip) erro
 
 		off := uint32(0)
 		for i := range numItems {
+			// Version 0 is rejected for every compressed item type, matching
+			// C++ lasreadpoint.cpp setup() (each switch has no version-0 case).
 			ver := items[i].Version
-			if ver == 0 {
-				ver = 2
-			}
 			sz := uint32(items[i].Size)
 			switch items[i].Type {
 			case LASITEM_POINT10:
@@ -317,6 +327,11 @@ func (rp *LASreadPoint) initDec() error {
 		}
 		rp.currentChunk = 0
 		if rp.chunkTotals != nil {
+			if len(rp.chunkTotals) < 2 {
+				// Adaptive chunking with an empty chunk table: no chunk sizes
+				// exist to read points with (C++ reads past its allocation here).
+				return fmt.Errorf("adaptive chunk table is empty")
+			}
 			rp.chunkSize = rp.chunkTotals[1]
 		}
 	}
@@ -414,6 +429,13 @@ func (rp *LASreadPoint) readChunkTable() error {
 	}
 	numberChunks := binary.LittleEndian.Uint32(verBuf)
 
+	// Sanity cap: every chunk occupies at least one byte between the first
+	// chunk and the chunk table, so a declared count exceeding that span is
+	// corrupt (and would otherwise trigger a giant allocation below).
+	if int64(numberChunks) > chunkTableStart-chunksStart {
+		return rp.chunkTableFallback(chunksStart, chunkTableStart)
+	}
+
 	rp.chunkTotals = nil
 	if rp.chunkSize == math.MaxUint32 {
 		rp.chunkTotals = make([]uint32, numberChunks+1)
@@ -422,9 +444,15 @@ func (rp *LASreadPoint) readChunkTable() error {
 	rp.chunkStarts = make([]int64, numberChunks+1)
 	rp.chunkStarts[0] = chunksStart
 	rp.tabledChunks = 1
+	// The declared chunk count is committed before decoding the table (C++
+	// reads it directly into the member): a mid-table failure keeps the
+	// partially decoded chunk starts instead of resetting the table.
+	rp.numberChunks = numberChunks
 
 	if numberChunks > 0 {
-		rp.dec.Init(rp.instream, true)
+		if err := rp.dec.Init(rp.instream, true); err != nil {
+			return rp.chunkTableFallback(chunksStart, chunkTableStart)
+		}
 		ic := NewIntegerDecompressor(rp.dec, 32, 2, 8, 0)
 		ic.InitDecompressor()
 		for i := uint32(1); i <= numberChunks; i++ {
@@ -461,18 +489,34 @@ func (rp *LASreadPoint) readChunkTable() error {
 			}
 			rp.chunkStarts[i] += rp.chunkStarts[i-1]
 			if rp.chunkStarts[i] <= rp.chunkStarts[i-1] {
-				return rp.chunkTableFallback(chunksStart, chunkTableStart)
+				// Non-monotonic chunk start: keep the valid prefix [0, i) and
+				// fall back to sequential reading. (C++ re-accumulates the
+				// whole table in its catch block here, corrupting the
+				// already-absolute prefix — deliberately not replicated.)
+				if rp.chunkSize == math.MaxUint32 {
+					return fmt.Errorf("corrupt chunk table with adaptive chunking")
+				}
+				rp.tabledChunks = i
+				rp.lastWarning = "corrupt chunk table"
+				if err := rp.instream.Seek(chunksStart); err != nil {
+					return err
+				}
+				return nil
 			}
 		}
 	}
 
-	rp.numberChunks = numberChunks
-	_ = rp.instream.Seek(chunksStart)
+	if err := rp.instream.Seek(chunksStart); err != nil {
+		return err
+	}
 	return nil
 }
 
 // chunkTableFallback handles corrupt/missing chunk table recovery.
 // Returns nil on soft error (fixed chunk size), non-nil on hard error.
+// On success the stream is repositioned at chunksStart so that sequential
+// chunk reading can proceed (C++ lasreadpoint.cpp falls through to
+// seek(chunks_start) in all recovery paths).
 func (rp *LASreadPoint) chunkTableFallback(chunksStart, chunkTableStart int64) error {
 	rp.chunkTotals = nil
 	if rp.chunkSize == math.MaxUint32 {
@@ -484,6 +528,8 @@ func (rp *LASreadPoint) chunkTableFallback(chunksStart, chunkTableStart int64) e
 		rp.chunkStarts[0] = chunksStart
 		rp.tabledChunks = 1
 	} else {
+		// Keep the chunk starts decoded before the failure (still relative
+		// deltas at this point) usable as absolute positions.
 		for i := uint32(1); i < rp.tabledChunks; i++ {
 			rp.chunkStarts[i] += rp.chunkStarts[i-1]
 		}
@@ -499,6 +545,9 @@ func (rp *LASreadPoint) chunkTableFallback(chunksStart, chunkTableStart int64) e
 		}
 	} else {
 		rp.lastWarning = "corrupt chunk table"
+	}
+	if err := rp.instream.Seek(chunksStart); err != nil {
+		return err
 	}
 	return nil
 }
@@ -522,7 +571,46 @@ func (rp *LASreadPoint) searchChunkTable(index, lower, upper uint32) uint32 {
 // Read — decompress one point.  point[i] holds the buffer for item i.
 // ---------------------------------------------------------------------------
 
+// errChunkBoundaryMismatch signals that the previous chunk did not end at its
+// tabled start position (C++ throws 4711 here).
+var errChunkBoundaryMismatch = errors.New("chunk start position mismatch")
+
+// Read decompresses one point. On failure it mirrors the C++ catch block:
+// end-of-file errors report "end-of-file during chunk with index N"; any
+// other decode error reports "chunk with index N of M is corrupt" and, when
+// the next chunk's start is known from the chunk table, repositions the
+// stream there so a subsequent Read resumes at the next chunk (salvaging the
+// remaining healthy chunks of a partly corrupt file).
 func (rp *LASreadPoint) Read(point [][]byte) error {
+	if err := rp.readCore(point); err != nil {
+		return rp.handleReadError(err)
+	}
+	return nil
+}
+
+// handleReadError is the Go equivalent of the catch block in C++
+// LASreadPoint::read (lasreadpoint.cpp).
+func (rp *LASreadPoint) handleReadError(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		if rp.dec != nil {
+			rp.lastError = fmt.Sprintf("end-of-file during chunk with index %d", rp.currentChunk)
+		} else {
+			rp.lastError = "end-of-file"
+		}
+		return fmt.Errorf("%s: %w", rp.lastError, err)
+	}
+	// Decompression error.
+	rp.lastError = fmt.Sprintf("chunk with index %d of %d is corrupt", rp.currentChunk, rp.tabledChunks)
+	// If we know where the next chunk starts, seek there so the next Read
+	// starts a fresh chunk (seek failure is best-effort, like C++).
+	if rp.dec != nil && rp.currentChunk+1 < rp.tabledChunks {
+		_ = rp.instream.Seek(rp.chunkStarts[rp.currentChunk+1])
+		rp.chunkCount = rp.chunkSize
+	}
+	return fmt.Errorf("%s: %w", rp.lastError, err)
+}
+
+func (rp *LASreadPoint) readCore(point [][]byte) error {
 	context := uint32(0)
 
 	if rp.dec != nil {
@@ -541,13 +629,10 @@ func (rp *LASreadPoint) Read(point [][]byte) error {
 							rp.currentChunk, rp.chunkStarts[rp.currentChunk], here, here-rp.chunkStarts[rp.currentChunk])
 					}
 					if rp.chunkStarts[rp.currentChunk] != here {
+						// Previous chunk was corrupt (C++ throws 4711 after
+						// decrementing); handleReadError does the recovery.
 						rp.currentChunk--
-						rp.lastError = fmt.Sprintf("chunk with index %d of %d is corrupt", rp.currentChunk, rp.tabledChunks)
-						if (rp.currentChunk + 1) < rp.tabledChunks {
-							_ = rp.instream.Seek(rp.chunkStarts[rp.currentChunk+1])
-							rp.chunkCount = rp.chunkSize
-						}
-						return fmt.Errorf("%s", rp.lastError)
+						return errChunkBoundaryMismatch
 					}
 				}
 			}
@@ -586,7 +671,9 @@ func (rp *LASreadPoint) Read(point [][]byte) error {
 			}
 			if rp.layeredLAS14Compression {
 				// 'dec' only hands over the stream (doesn't decode)
-				rp.dec.Init(rp.instream, false)
+				if err := rp.dec.Init(rp.instream, false); err != nil {
+					return err
+				}
 				countBuf := make([]byte, 4)
 				if err := rp.instream.Get32bitsLE(countBuf); err != nil {
 					return err
@@ -609,7 +696,11 @@ func (rp *LASreadPoint) Read(point [][]byte) error {
 						return err
 					}
 				}
-				rp.dec.Init(rp.instream, true)
+				// Seeds the decoder value from the stream: a truncated chunk
+				// must surface here, not decode garbage from stale state.
+				if err := rp.dec.Init(rp.instream, true); err != nil {
+					return err
+				}
 			}
 			rp.readers = make([]LASreadItem, rp.numReaders)
 			for i := uint32(0); i < rp.numReaders; i++ {
@@ -709,8 +800,12 @@ func (rp *LASreadPoint) Seek(current, target uint32) error {
 }
 
 // CheckEnd — verify integrity after reading the last point.
+// The check only applies while the compressed readers are engaged (a point
+// was decoded since the last chunk boundary); C++ gates this on
+// readers == readers_compressed. After a Seek that landed exactly on a chunk
+// boundary no decoding happened, and the boundary check would misfire.
 func (rp *LASreadPoint) CheckEnd() error {
-	if rp.dec != nil {
+	if rp.dec != nil && rp.readers != nil {
 		rp.dec.Done()
 		rp.currentChunk++
 		if rp.currentChunk < rp.tabledChunks {

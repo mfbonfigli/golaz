@@ -1,0 +1,16 @@
+{
+  "las14_pf6_compat_1000pts.laz": {
+    "on_disk": {"point_data_format_byte": 129, "point_data_format": 1, "compressed_bit": true, "point_data_record_length": 33, "version_minor": 2, "header_size": 227, "legacy_number_of_point_records": 1000},
+    "on_disk_vlrs": [{"user_id": "lascompatible", "record_id": 22204, "length": 156}, {"user_id": "LASF_Spec", "record_id": 4, "length": 768}, {"user_id": "laszip encoded", "record_id": 22204, "length": 52}],
+    "compatibility_marker_vlr": {"user_id": "lascompatible", "record_id": 22204},
+    "extra_bytes_descriptor_names": ["LAS 1.4 scan angle", "LAS 1.4 extended returns", "LAS 1.4 classification", "LAS 1.4 flags and channel"],
+    "dll_reader_reports": {"point_data_format": 6, "point_data_record_length": 30, "version_minor": 4, "number_of_variable_length_records": 0, "attributes_visible": 0, "extra_bytes_visible": 0, "number_of_point_records": 1000}
+  },
+  "las14_pf8_compat_1000pts.laz": {
+    "on_disk": {"point_data_format_byte": 131, "point_data_format": 3, "compressed_bit": true, "point_data_record_length": 41, "version_minor": 2, "header_size": 227, "legacy_number_of_point_records": 1000},
+    "on_disk_vlrs": [{"user_id": "lascompatible", "record_id": 22204, "length": 156}, {"user_id": "LASF_Spec", "record_id": 4, "length": 960}, {"user_id": "laszip encoded", "record_id": 22204, "length": 58}],
+    "compatibility_marker_vlr": {"user_id": "lascompatible", "record_id": 22204},
+    "extra_bytes_descriptor_names": ["LAS 1.4 scan angle", "LAS 1.4 extended returns", "LAS 1.4 classification", "LAS 1.4 flags and channel", "LAS 1.4 NIR band"],
+    "dll_reader_reports": {"point_data_format": 8, "point_data_record_length": 38, "version_minor": 4, "number_of_variable_length_records": 0, "attributes_visible": 0, "extra_bytes_visible": 0, "number_of_point_records": 1000}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "chunked_midchunk_corrupt.laz": {
+    "corruption": {"chunk_index": 3, "chunk_start": 9273, "file_offset": 9315, "offset_in_chunk": 42, "original_bytes": "fe66c07c", "corrupt_bytes": "ffffffff"},
+    "segments": [
+      {"reads_from": 0, "reads_to": 300, "pristine_from": 0},
+      {"error_at_read": 301, "error": "chunk with index 3 of 11 is corrupt"},
+      {"reads_from": 302, "reads_to": 901, "pristine_from": 400},
+      {"reads_from": 902, "reads_to": 999, "failed": true, "error": "end-of-file during chunk with index 10"}
+    ]
+  }
+}

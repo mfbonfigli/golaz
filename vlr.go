@@ -73,7 +73,7 @@ func (v VLR) OGCWkt() (string, error) {
 }
 
 // ExtraByteDescriptors parses the payload as a sequence of ExtraByteDescriptor
-// records (each 192 bytes per the LAS 1.4 spec §2.8).
+// records (each 192 bytes per the LAS 1.4 R15 spec §4.3 (Extra Bytes VLR)).
 // Returns an error if IsExtraByteDescriptor() is false or the payload is malformed.
 func (v VLR) ExtraByteDescriptors() ([]ExtraByteDescriptor, error) {
 	if !v.IsExtraByteDescriptor() {
@@ -163,11 +163,12 @@ func (e EVLR) ExtraByteDescriptors() ([]ExtraByteDescriptor, error) {
 }
 
 // ---------------------------------------------------------------------------
-// ExtraByteDescriptor — describes one extra byte field (LAS 1.4 spec §2.8)
+// ExtraByteDescriptor — describes one extra byte field
+// (LAS 1.4 R15 spec §4.3, "Extra Bytes")
 // ---------------------------------------------------------------------------
 
 // ExtraByteType enumerates the scalar types for extra byte fields.
-// Values match the LAS 1.4 spec §2.8 data_type field exactly.
+// Values match the data_type field of LAS 1.4 R15 §4.3 exactly.
 type ExtraByteType uint8
 
 // ExtraByteDescriptor describes one extra byte field as defined in LASF_Spec recID 4.
@@ -215,7 +216,7 @@ func extraByteSize(dataType, optionsByte uint8) uint8 {
 }
 
 // unpack parses a 192-byte on-disk ExtraByteDescriptor record.
-// Layout per LAS 1.4 spec §2.8 / LASzip lasattributer.hpp:
+// Layout per LAS 1.4 R15 spec §4.3 (Extra Bytes VLR) / LASzip lasattributer.hpp:
 //
 //	 0:  reserved (2 bytes)
 //	 2:  data_type (1 byte)
@@ -272,9 +273,15 @@ func (d *ExtraByteDescriptor) unpack(b []byte) error {
 	return nil
 }
 
-// readExtraByteFloat64 interprets b as the scalar base type of t and returns float64.
-// b must be at least 8 bytes (no_data/min/max slots are always 8 bytes on disk).
-// For deprecated array types (data_type > 10), only the first element is read.
+// readExtraByteFloat64 interprets b as an 8-byte "anytype" slot and returns float64.
+// Per LAS 1.4 R15 §4.3 (Extra Bytes VLR): "If the selected data_type is less
+// than 8 bytes, the no_data, min, and max fields should be upcast into 8-byte
+// storage. For any float these 8 bytes would be upcast to a double, for any
+// unsigned char, unsigned short, or unsigned long they would be upcast to an
+// unsigned long long and for any char, short, or long, they would be upcast
+// to a long long." LASzip's lasattributer.hpp implements the same rule.
+// For deprecated array types (data_type > 10) the slot holds a single upcast
+// value of the base type.
 func readExtraByteFloat64(b []byte, t ExtraByteType) float64 {
 	// Normalise to base type (handles deprecated array types via modulo).
 	if t == 0 {
@@ -282,25 +289,11 @@ func readExtraByteFloat64(b []byte, t ExtraByteType) float64 {
 	}
 	baseType := (int(t) - 1) % 10
 	switch baseType {
-	case 0: // uint8
-		return float64(b[0])
-	case 1: // int8
-		return float64(int8(b[0]))
-	case 2: // uint16
-		return float64(binary.LittleEndian.Uint16(b))
-	case 3: // int16
-		return float64(int16(binary.LittleEndian.Uint16(b)))
-	case 4: // uint32
-		return float64(binary.LittleEndian.Uint32(b))
-	case 5: // int32
-		return float64(int32(binary.LittleEndian.Uint32(b)))
-	case 6: // uint64
+	case 0, 2, 4, 6: // uint8/uint16/uint32/uint64 — upcast to uint64 on disk
 		return float64(binary.LittleEndian.Uint64(b))
-	case 7: // int64
+	case 1, 3, 5, 7: // int8/int16/int32/int64 — upcast to int64 on disk
 		return float64(int64(binary.LittleEndian.Uint64(b)))
-	case 8: // float32
-		return float64(math.Float32frombits(binary.LittleEndian.Uint32(b)))
-	case 9: // float64
+	case 8, 9: // float32/float64 — upcast to float64 on disk
 		return math.Float64frombits(binary.LittleEndian.Uint64(b))
 	}
 	return 0
@@ -310,10 +303,29 @@ func readExtraByteFloat64(b []byte, t ExtraByteType) float64 {
 // I/O helpers — read all VLRs and EVLRs from the stream
 // ---------------------------------------------------------------------------
 
+// cString converts a fixed-size NUL-padded byte field to a string, truncating
+// at the first NUL like C string handling in the reference implementation.
+// Junk bytes after an interior NUL must not defeat record identification.
+func cString(b []byte) string {
+	if i := strings.IndexByte(string(b), 0); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
+}
+
 // readAllVLRs reads numVLRs VLR records starting immediately after the header
 // (stream must be positioned right after the header bytes).
+// The declared VLR count is validated against the space available before the
+// point data (each VLR needs at least its 54-byte header).
 // Returns all VLRs; also returns the LASzip VLR data if found (nil otherwise).
-func readAllVLRs(rs io.ReadSeeker, headerSize uint16, numVLRs uint32) ([]VLR, []byte, error) {
+func readAllVLRs(rs io.ReadSeeker, headerSize uint16, numVLRs uint32, offsetToPointData uint32) ([]VLR, []byte, error) {
+	if offsetToPointData < uint32(headerSize) {
+		return nil, nil, fmt.Errorf("offset to point data %d precedes header end %d", offsetToPointData, headerSize)
+	}
+	if maxVLRs := (offsetToPointData - uint32(headerSize)) / 54; numVLRs > maxVLRs {
+		return nil, nil, fmt.Errorf("header declares %d VLRs but only %d bytes precede the point data (max %d records)",
+			numVLRs, offsetToPointData-uint32(headerSize), maxVLRs)
+	}
 	if _, err := rs.Seek(int64(headerSize), io.SeekStart); err != nil {
 		return nil, nil, fmt.Errorf("seek to VLR section: %w", err)
 	}
@@ -327,9 +339,9 @@ func readAllVLRs(rs io.ReadSeeker, headerSize uint16, numVLRs uint32) ([]VLR, []
 			return nil, nil, fmt.Errorf("read VLR[%d] header: %w", i, err)
 		}
 		recLen := binary.LittleEndian.Uint16(hdr[20:22])
-		userID := strings.TrimRight(string(hdr[2:18]), "\x00")
+		userID := cString(hdr[2:18])
 		recID := binary.LittleEndian.Uint16(hdr[18:20])
-		desc := strings.TrimRight(string(hdr[22:54]), "\x00")
+		desc := cString(hdr[22:54])
 
 		var data []byte
 		if recLen > 0 {
@@ -350,29 +362,41 @@ func readAllVLRs(rs io.ReadSeeker, headerSize uint16, numVLRs uint32) ([]VLR, []
 }
 
 // readAllEVLRs reads numEVLRs EVLR records from the given file offset.
+// Each record's declared payload length is validated against the bytes
+// actually remaining in the file before allocating.
 // Returns an error if the stream cannot seek or if a record is malformed.
 func readAllEVLRs(rs io.ReadSeeker, evlrOffset uint64, numEVLRs uint32, savePos int64) ([]EVLR, error) {
+	fileSize, err := rs.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, fmt.Errorf("determine file size for EVLR read: %w", err)
+	}
 	if _, err := rs.Seek(int64(evlrOffset), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("seek to EVLR section (offset %d): %w", evlrOffset, err)
 	}
 
-	evlrs := make([]EVLR, 0, numEVLRs)
+	evlrs := make([]EVLR, 0, min(numEVLRs, uint32(min(uint64(fileSize)/60, uint64(1<<20)))))
 	hdr := make([]byte, 60)
+	pos := int64(evlrOffset)
 	for i := range numEVLRs {
 		if _, err := io.ReadFull(rs, hdr); err != nil {
 			return nil, fmt.Errorf("read EVLR[%d] header: %w", i, err)
 		}
+		pos += 60
 		recLen := binary.LittleEndian.Uint64(hdr[20:28])
-		userID := strings.TrimRight(string(hdr[2:18]), "\x00")
+		userID := cString(hdr[2:18])
 		recID := binary.LittleEndian.Uint16(hdr[18:20])
-		desc := strings.TrimRight(string(hdr[28:60]), "\x00")
+		desc := cString(hdr[28:60])
 
+		if recLen > uint64(fileSize-pos) {
+			return nil, fmt.Errorf("EVLR[%d] declares %d payload bytes but only %d remain in the file", i, recLen, fileSize-pos)
+		}
 		var data []byte
 		if recLen > 0 {
 			data = make([]byte, recLen)
 			if _, err := io.ReadFull(rs, data); err != nil {
 				return nil, fmt.Errorf("read EVLR[%d] data (%d bytes): %w", i, recLen, err)
 			}
+			pos += int64(recLen)
 		}
 		evlrs = append(evlrs, EVLR{UserID: userID, RecordID: recID, Description: desc, Data: data})
 	}
