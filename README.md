@@ -317,7 +317,14 @@ for w := 0; w < runtime.GOMAXPROCS(0); w++ {
             if err := d.Load(i); err != nil { // reads chunk i into memory
                 return
             }
-            for d.Scan(&p) == nil { // io.EOF at the end of the chunk
+            for {
+                err := d.Scan(&p)
+                if err == io.EOF {
+                    break // end of the chunk
+                }
+                if err != nil {
+                    return // the chunk is corrupt
+                }
                 // point number chunks[i].FirstPoint + k of the file
             }
         }
@@ -330,7 +337,7 @@ wg.Wait()
 - `Chunks` and `NewChunkDecoder` are safe for concurrent use. Decoders read through `io.ReaderAt`, so they do not move the `Reader`'s own position.
 - Uncompressed `.las` files work the same way: they are presented as runs of 50 000 points.
 - Order is up to you: chunks finish in any order, and `FirstPoint` tells where each one belongs.
-- `ErrChunksUnavailable` is returned for files that can only be read front to back: legacy pointwise-compressed files (no chunks), files whose chunk table is missing or corrupt, and `OpenReader` sources without `ReadAt`. A corrupt chunk fails on its own decoder; the other chunks still decode.
+- `ErrChunksUnavailable` is returned for files that can only be read front to back: legacy pointwise-compressed files (no chunks), files whose chunk table is missing or corrupt, and `OpenReader` sources without `ReadAt`. A corrupt chunk fails on its own decoder; the other chunks still decode. Check the error of every `Scan`: damage can show up after the last point of a chunk, as an error in place of `io.EOF`.
 
 ### Writing files
 
