@@ -93,6 +93,24 @@ func (m *ArithmeticBitModel) Update() {
 // ArithmeticModel — N-ary symbol adaptive probability model
 // ---------------------------------------------------------------------------
 
+const (
+	// decoderTableExtraBits is how much finer than the C++ reference the
+	// decoder look-up table is (a factor of 2^3 = 8 more entries).
+	decoderTableExtraBits uint32 = 3
+
+	// decoderTableMaxBits caps the table at 512 entries, the largest size
+	// the C++ reference uses (for alphabets above 1024 symbols). The cap
+	// bounds what a model costs in memory and in rebuild time at every
+	// update; finer tables were not measured.
+	//
+	// It is not what keeps the look-up in bounds: DecodeSymbol clamps the
+	// table index. The cap is only a second line of defence there. With a
+	// table shift of 6 or more, the largest decoder value a well-formed
+	// stream can produce (2^15+63, because length is at least 2^24 but not
+	// a multiple of 2^15) already falls inside the tableSize+2 entries.
+	decoderTableMaxBits uint32 = DM__LengthShift - 6
+)
+
 // ArithmeticModel is an N-ary symbol adaptive probability model used by the
 // arithmetic decoder. It maintains a cumulative distribution and optionally
 // a decoder table for fast look-up-based decoding.
@@ -132,13 +150,23 @@ func (m *ArithmeticModel) Init(table []uint32) {
 		}
 		m.LastSymbol = symbols - 1
 
-		// For decompression with more than 16 symbols, build a decoder table.
-		// Encoder-mode models (compress) never need it.
-		if !m.compress && symbols > 16 {
+		// For decompression, build a decoder table. Encoder-mode models
+		// (compress) never need it.
+		//
+		// The table only narrows the search for the symbol: whatever its
+		// resolution, DecodeSymbol ends on the one symbol whose interval
+		// contains the decoder value, so the decoded stream does not depend
+		// on it. golaz therefore deviates from the C++ sizing in two ways,
+		// both measured on real files: the table is decoderTableExtraBits
+		// finer, which lets most look-ups finish without the hard-to-predict
+		// bisection steps, and alphabets of 16 symbols or fewer get a table
+		// too instead of the multiplication-only search.
+		if !m.compress {
 			tableBits := uint32(3)
 			for symbols > (1 << (tableBits + 2)) {
 				tableBits++
 			}
+			tableBits = min(tableBits+decoderTableExtraBits, decoderTableMaxBits)
 			m.TableSize = 1 << tableBits
 			m.TableShift = DM__LengthShift - tableBits
 			// Allocation: 2*symbols + tableSize + 2
@@ -198,7 +226,11 @@ func (m *ArithmeticModel) update() {
 			m.Distribution[k] = (scale * sum) >> (31 - DM__LengthShift)
 			sum += m.SymbolCount[k]
 			w := m.Distribution[k] >> m.TableShift
-			for s < w {
+			// s <= TableSize is always true for a consistent model. It only
+			// bites when Init was given counts that do not add up to the
+			// alphabet size (nothing in this package does): the distribution
+			// then overshoots 2^15 and would index past the table.
+			for s < w && s <= m.TableSize {
 				s++
 				m.DecoderTable[s] = k - 1
 			}

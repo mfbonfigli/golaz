@@ -107,8 +107,10 @@ func TestSymbolModelInit_Small(t *testing.T) {
 	if m.LastSymbol != 7 {
 		t.Errorf("LastSymbol = %d, want 7", m.LastSymbol)
 	}
-	if m.DecoderTable != nil {
-		t.Error("small model (8 symbols) should not have decoder table")
+	// Unlike the C++ reference, golaz gives small alphabets a decoder table
+	// too (see ArithmeticModel.Init).
+	if m.DecoderTable == nil {
+		t.Error("small model (8 symbols) should have a decoder table")
 	}
 	if m.TotalCount != 8 {
 		t.Errorf("TotalCount = %d, want 8 (each count = 1)", m.TotalCount)
@@ -752,12 +754,16 @@ func TestCreateMultipleSymbolModels(t *testing.T) {
 	m2 := dec.CreateSymbolModel(16)
 	dec.InitSymbolModel(m2, nil)
 
-	// m1 has Distribution size 2*8 = 16, m2 has 2*16 = 32
-	if len(m1.Distribution) != 16 {
-		t.Errorf("m1 distribution len = %d, want 16", len(m1.Distribution))
+	// Each model owns one slab: distribution + counts (2*symbols), followed
+	// by its decoder table of 64+2 entries. The two models must not share it.
+	if len(m1.Distribution) != 2*8+64+2 {
+		t.Errorf("m1 slab len = %d, want %d", len(m1.Distribution), 2*8+64+2)
 	}
-	if len(m2.Distribution) != 32 {
-		t.Errorf("m2 distribution len = %d, want 32", len(m2.Distribution))
+	if len(m2.Distribution) != 2*16+64+2 {
+		t.Errorf("m2 slab len = %d, want %d", len(m2.Distribution), 2*16+64+2)
+	}
+	if &m1.Distribution[0] == &m2.Distribution[0] {
+		t.Error("m1 and m2 share their slab")
 	}
 }
 

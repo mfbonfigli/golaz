@@ -25,6 +25,7 @@ package laz
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"os"
 )
@@ -36,6 +37,12 @@ type ArithmeticDecoder struct {
 	value    uint32 // current decoder value (C++: value)
 	length   uint32 // current interval length (C++: length)
 	Debug    bool   // when true, prints value/length transitions to stderr
+
+	// mem is instream when that is an in-memory stream, nil otherwise. The
+	// decoder then takes the next byte straight from the stream's slice
+	// instead of making an interface call per byte. It advances the stream's
+	// own position as it goes, so both views of the stream always agree.
+	mem *ByteStreamInArray
 }
 
 // NewArithmeticDecoder creates a new ArithmeticDecoder.
@@ -56,6 +63,7 @@ func (d *ArithmeticDecoder) Init(instream ByteStreamIn, reallyInit bool) error {
 		return fmt.Errorf("init: nil instream")
 	}
 	d.instream = instream
+	d.mem, _ = instream.(*ByteStreamInArray)
 	d.length = AC__MaxLength
 	if reallyInit {
 		b0, err := instream.GetByte()
@@ -82,6 +90,7 @@ func (d *ArithmeticDecoder) Init(instream ByteStreamIn, reallyInit bool) error {
 // Done disassociates the decoder from the stream.
 func (d *ArithmeticDecoder) Done() {
 	d.instream = nil
+	d.mem = nil
 }
 
 // GetByteStreamIn returns the underlying ByteStreamIn. Used when the
@@ -143,9 +152,16 @@ func (d *ArithmeticDecoder) renormDecInterval() error {
 			fmt.Fprintf(os.Stderr, "[DECODER] renorm_iter=%d before: value=%#08x length=%#08x\n",
 				n, d.value, d.length)
 		}
-		b, err := d.instream.GetByte()
-		if err != nil {
-			return fmt.Errorf("renorm: %w", err)
+		var b byte
+		if mem := d.mem; mem != nil && mem.pos < int64(len(mem.data)) {
+			b = mem.data[mem.pos]
+			mem.pos++
+		} else {
+			var err error
+			if b, err = d.instream.GetByte(); err != nil {
+				d.value, d.length = padRenorm(d.value, d.length)
+				return fmt.Errorf("renorm: %w", err)
+			}
 		}
 		d.value = (d.value << 8) | uint32(b)
 		d.length <<= 8
@@ -158,6 +174,19 @@ func (d *ArithmeticDecoder) renormDecInterval() error {
 		}
 	}
 	return nil
+}
+
+// padRenorm completes a renormalization that ran out of input by shifting in
+// zero bytes. The stream is over and the caller gets the end-of-file error
+// either way; this only restores length >= AC__MinLength, so that a caller
+// who keeps decoding after the error gets garbage rather than a division by
+// zero (the decode functions divide by length >> 15).
+func padRenorm(value, length uint32) (uint32, uint32) {
+	for length < AC__MinLength {
+		value <<= 8
+		length <<= 8
+	}
+	return value, length
 }
 
 // ---------------------------------------------------------------------------
@@ -204,20 +233,33 @@ func (d *ArithmeticDecoder) DecodeBit(m *ArithmeticBitModel) (uint32, error) {
 // DecodeSymbol decodes a symbol from the given ArithmeticModel.
 // Returns the symbol index. This must match C++ ArithmeticDecoder::decodeSymbol() exactly.
 func (d *ArithmeticDecoder) DecodeSymbol(m *ArithmeticModel) (uint32, error) {
-	var sym, x, y uint32
-	y = d.length
+	// This is the hottest function of the decoder: nearly two thirds of the
+	// time spent reading a LAZ file. value and length are kept in locals for
+	// the whole call, because the compiler must assume that a store through m
+	// can alias d and would otherwise reload them after each one.
+	var sym, x uint32
+	value, length := d.value, d.length
+	y := length
+	dist := m.Distribution
+	length >>= DM__LengthShift
 
-	if m.DecoderTable != nil {
+	if table := m.DecoderTable; table != nil {
 		// Use table look-up for faster decoding.
-		dv := d.value / (d.length >> DM__LengthShift)
-		t := dv >> m.TableShift
+		dv := value / length
+		// On a well-formed stream value < length, so dv is at most 2^15+63
+		// and t at most TableSize. A corrupt stream can break that (a chunk
+		// starting with FF FF FF FF sets value == length for good); the
+		// clamp then selects the last symbol, exactly as the table-free
+		// search below does, instead of indexing past the table (the C++
+		// reference reads out of bounds here).
+		t := min(dv>>m.TableShift, m.TableSize)
 
-		sym = m.DecoderTable[t] // initial decision based on table look-up
-		n := m.DecoderTable[t+1] + 1
+		sym = table[t] // initial decision based on table look-up
+		n := table[t+1] + 1
 
 		for n > sym+1 { // finish with bisection search
 			k := (sym + n) >> 1
-			if m.Distribution[k] > dv {
+			if dist[k] > dv {
 				n = k
 			} else {
 				sym = k
@@ -225,22 +267,18 @@ func (d *ArithmeticDecoder) DecodeSymbol(m *ArithmeticModel) (uint32, error) {
 		}
 
 		// Compute products.
-		d.length >>= DM__LengthShift
-		x = m.Distribution[sym] * d.length
+		x = dist[sym] * length
 		if sym != m.LastSymbol {
-			y = m.Distribution[sym+1] * d.length
+			y = dist[sym+1] * length
 		}
 	} else {
 		// Decode using only multiplications (bisection search).
-		x = 0
-		sym = 0
-		d.length >>= DM__LengthShift
 		n := m.Symbols
 		k := n >> 1
 
 		for {
-			z := d.length * m.Distribution[k]
-			if z > d.value {
+			z := length * dist[k]
+			if z > value {
 				n = k
 				y = z // value is smaller
 			} else {
@@ -255,13 +293,36 @@ func (d *ArithmeticDecoder) DecodeSymbol(m *ArithmeticModel) (uint32, error) {
 		}
 	}
 
-	d.value -= x // update interval
-	d.length = y - x
+	value -= x // update interval
+	length = y - x
 
-	if d.length < AC__MinLength {
-		if err := d.renormDecInterval(); err != nil {
-			return 0, err
+	if length < AC__MinLength {
+		if mem := d.mem; mem != nil && !d.Debug {
+			// renormDecInterval, inlined for in-memory streams.
+			data, pos := mem.data, mem.pos
+			for {
+				if pos >= int64(len(data)) {
+					mem.pos = pos
+					d.value, d.length = padRenorm(value, length)
+					return 0, fmt.Errorf("renorm: getByte: %w", io.EOF)
+				}
+				value = (value << 8) | uint32(data[pos])
+				pos++
+				length <<= 8
+				if length >= AC__MinLength {
+					break
+				}
+			}
+			mem.pos = pos
+			d.value, d.length = value, length
+		} else {
+			d.value, d.length = value, length
+			if err := d.renormDecInterval(); err != nil {
+				return 0, err
+			}
 		}
+	} else {
+		d.value, d.length = value, length
 	}
 
 	m.SymbolCount[sym]++
@@ -270,7 +331,9 @@ func (d *ArithmeticDecoder) DecodeSymbol(m *ArithmeticModel) (uint32, error) {
 		m.update()
 	}
 
-	d.trace("DecodeSymbol", sym)
+	if d.Debug {
+		d.trace("DecodeSymbol", sym)
+	}
 	return sym, nil
 }
 
