@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	laz "github.com/mfbonfigli/golaz/internal/laz"
 )
@@ -34,6 +35,10 @@ import (
 // buffers) that is mutated on every Scan/Next/Seek call. Callers must either
 // open a separate Reader per goroutine or serialize access to a shared Reader
 // with a mutex.
+//
+// To decode one file on several goroutines, use Chunks and NewChunkDecoder:
+// those two methods are safe for concurrent use, and every ChunkDecoder
+// carries its own decode state.
 type Reader struct {
 	// source
 	rs      io.ReadSeeker
@@ -80,6 +85,16 @@ type Reader struct {
 	// EVLR cache
 	evlrs       []EVLR
 	evlrsLoaded bool
+
+	// chunk-level access (see chunks.go); all immutable after Open except
+	// the lazily computed, sync.Once-guarded chunk layout
+	ra         io.ReaderAt // nil when the source cannot be read at an offset
+	size       int64       // total size of the source in bytes
+	lzCfg      *laz.LASzip // item/compressor configuration (also for raw LAS)
+	selective  uint32      // selective decompression mask in effect
+	chunksOnce sync.Once
+	chunks     []Chunk
+	chunksErr  error
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +134,18 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 	}
 	r := &Reader{rs: rs}
 	r.stream = laz.NewByteStreamInReader(rs)
+	if ra, ok := rs.(io.ReaderAt); ok {
+		// Chunk decoders read through ReadAt, which leaves the position of
+		// rs alone, so they never disturb sequential reading.
+		if pos, err := rs.Seek(0, io.SeekCurrent); err == nil {
+			if size, err := rs.Seek(0, io.SeekEnd); err == nil {
+				r.ra, r.size = ra, size
+			}
+			if _, err := rs.Seek(pos, io.SeekStart); err != nil {
+				return nil, fmt.Errorf("restore read position: %w", err)
+			}
+		}
+	}
 
 	// ── 1. Parse header ──────────────────────────────────────────────────
 	h, err := parseHeader(rs)
@@ -254,6 +281,8 @@ func openFrom(rs io.ReadSeeker, opts ...Option) (*Reader, error) {
 	if !cfg.maskExplicitlySet {
 		mask = SelectiveAll
 	}
+	r.lzCfg = lzCfg
+	r.selective = uint32(mask)
 	r.lp = laz.NewLASreadPoint(uint32(mask))
 	if err := r.lp.Setup(uint32(lzCfg.NumItems), r.items, lzCfg); err != nil {
 		return nil, fmt.Errorf("setup LASreadPoint: %w", err)
