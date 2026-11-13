@@ -121,13 +121,17 @@ func (r *LASreadItemRawByte) Read(item []byte, _ *uint32) error {
 
 type LASreadItemRawPoint14LE struct {
 	LASreadItemRaw
+	// onDisk holds the 30-byte record being read. A field, not a local
+	// buffer: it is passed through the ByteStreamIn interface, so a local
+	// would be heap-allocated for every point.
+	onDisk [30]byte
 }
 
 func (r *LASreadItemRawPoint14LE) Read(item []byte, _ *uint32) error {
 	if len(item) < 40 {
 		return errBufTooSmall
 	}
-	buf := make([]byte, 30)
+	buf := r.onDisk[:]
 	if err := r.instream.GetBytes(buf); err != nil {
 		return err
 	}

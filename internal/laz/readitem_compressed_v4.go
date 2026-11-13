@@ -425,8 +425,14 @@ func (r *LASreadItemCompressedPoint14v4) createAndInitModelsDecompressors(ctx ui
 	c.IcDX.InitDecompressor()
 	c.IcDY.InitDecompressor()
 	for i := range 12 {
-		c.LastXDiffMed5[i] = NewStreamingMedian5()
-		c.LastYDiffMed5[i] = NewStreamingMedian5()
+		if c.LastXDiffMed5[i] == nil {
+			c.LastXDiffMed5[i] = NewStreamingMedian5()
+			c.LastYDiffMed5[i] = NewStreamingMedian5()
+		} else {
+			// reuse across chunks instead of allocating 24 medians per chunk
+			c.LastXDiffMed5[i].Init()
+			c.LastYDiffMed5[i].Init()
+		}
 	}
 
 	// Z layer

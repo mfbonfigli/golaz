@@ -72,6 +72,17 @@ type LASreadPoint struct {
 
 	lastError   string
 	lastWarning string
+
+	// Hot-path state kept in the struct so Read does not allocate.
+	// context is the per-point scanner-channel context handed to every item
+	// reader: as a local it would escape to the heap on each point, because
+	// its address crosses an interface call.
+	context uint32
+	// rawItems and compressedItems are the two values readers can take,
+	// built once so a chunk boundary does not allocate a new slice.
+	rawItems        []LASreadItem
+	compressedItems []LASreadItem
+	scratch         [4]byte
 }
 
 // NewLASreadPoint creates a new orchestrator with the given selective
@@ -140,6 +151,11 @@ func (rp *LASreadPoint) Setup(numItems uint32, items []LASitem, lz *LASzip) erro
 		}
 		rp.pointSize += sz
 	}
+	rp.rawItems = make([]LASreadItem, numItems)
+	for i := range numItems {
+		rp.rawItems[i] = rp.readersRaw[i].(LASreadItem)
+	}
+	rp.compressedItems = nil
 
 	// --- compressed readers -----------------------------------------------
 	if rp.dec != nil {
@@ -264,6 +280,11 @@ func (rp *LASreadPoint) Setup(numItems uint32, items []LASitem, lz *LASzip) erro
 			}
 		}
 
+		rp.compressedItems = make([]LASreadItem, numItems)
+		for i := range numItems {
+			rp.compressedItems[i] = rp.readersCompressed[i]
+		}
+
 		if lz.Compressor != LASZIP_COMPRESSOR_POINTWISE {
 			if lz.ChunkSize != 0 {
 				rp.chunkSize = lz.ChunkSize
@@ -297,10 +318,7 @@ func (rp *LASreadPoint) Init(instream ByteStreamIn) error {
 			return err
 		}
 		rp.pointStart = pos
-		rp.readers = make([]LASreadItem, rp.numReaders)
-		for i := uint32(0); i < rp.numReaders; i++ {
-			rp.readers[i] = rp.readersRaw[i].(LASreadItem)
-		}
+		rp.readers = rp.rawItems
 	}
 	return nil
 }
@@ -611,7 +629,8 @@ func (rp *LASreadPoint) handleReadError(err error) error {
 }
 
 func (rp *LASreadPoint) readCore(point [][]byte) error {
-	context := uint32(0)
+	rp.context = 0
+	context := &rp.context
 
 	if rp.dec != nil {
 		// ---------- compressed path ----------
@@ -657,15 +676,14 @@ func (rp *LASreadPoint) readCore(point [][]byte) error {
 
 		if rp.readers != nil {
 			for i := uint32(0); i < rp.numReaders; i++ {
-				if err := rp.readers[i].Read(point[i], &context); err != nil {
+				if err := rp.readers[i].Read(point[i], context); err != nil {
 					return err
 				}
 			}
 		} else {
 			// First point in chunk: read raw then init compressed readers
 			for i := uint32(0); i < rp.numReaders; i++ {
-				r := rp.readersRaw[i].(LASreadItem)
-				if err := r.Read(point[i], &context); err != nil {
+				if err := rp.rawItems[i].Read(point[i], context); err != nil {
 					return err
 				}
 			}
@@ -674,25 +692,23 @@ func (rp *LASreadPoint) readCore(point [][]byte) error {
 				if err := rp.dec.Init(rp.instream, false); err != nil {
 					return err
 				}
-				countBuf := make([]byte, 4)
-				if err := rp.instream.Get32bitsLE(countBuf); err != nil {
+				// num_points_in_chunk: read to advance stream position; value not used by layered decompressor
+				if err := rp.instream.Get32bitsLE(rp.scratch[:]); err != nil {
 					return err
 				}
-				// num_points_in_chunk: read to advance stream position; value not used by layered decompressor
-				_ = binary.LittleEndian.Uint32(countBuf)
 				for i := uint32(0); i < rp.numReaders; i++ {
 					if err := rp.readersCompressed[i].ChunkSizes(); err != nil {
 						return err
 					}
 				}
 				for i := uint32(0); i < rp.numReaders; i++ {
-					if err := rp.readersCompressed[i].Init(point[i], &context); err != nil {
+					if err := rp.readersCompressed[i].Init(point[i], context); err != nil {
 						return err
 					}
 				}
 			} else {
 				for i := uint32(0); i < rp.numReaders; i++ {
-					if err := rp.readersCompressed[i].Init(point[i], &context); err != nil {
+					if err := rp.readersCompressed[i].Init(point[i], context); err != nil {
 						return err
 					}
 				}
@@ -702,15 +718,12 @@ func (rp *LASreadPoint) readCore(point [][]byte) error {
 					return err
 				}
 			}
-			rp.readers = make([]LASreadItem, rp.numReaders)
-			for i := uint32(0); i < rp.numReaders; i++ {
-				rp.readers[i] = rp.readersCompressed[i]
-			}
+			rp.readers = rp.compressedItems
 		}
 	} else {
 		// ---------- uncompressed path ----------
 		for i := uint32(0); i < rp.numReaders; i++ {
-			if err := rp.readers[i].Read(point[i], &context); err != nil {
+			if err := rp.readers[i].Read(point[i], context); err != nil {
 				return err
 			}
 		}
