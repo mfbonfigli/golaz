@@ -29,6 +29,7 @@ GoLaz is a **pure Go** library for reading and writing **LAS** and **LAZ** (comp
 | **CRS metadata** | WKT (OGC), GeoTIFF key directory, `CRS()` helper |
 | **Selective decode** | Skip unused layers for faster I/O on LAS 1.4 v3/v4 files |
 | **Seeking** | Random-access seek to any point by index |
+| **Parallel decoding** | Chunk-level decoders read one file on several goroutines, with results identical to sequential reading |
 | **Corruption recovery** | Corrupt or missing chunk tables and damaged chunks are recovered like the C++ reference: healthy chunks remain readable |
 | **Writing** | Uncompressed `.las` and compressed `.laz` output for all point formats (0 – 10), LAS 1.2 – 1.5; fixed-size or explicit chunk boundaries; point counts, per-return counts, and bounding box patched into the header on close |
 
@@ -280,6 +281,56 @@ Available masks:
 | `SelectiveExtraBytes` | All extra byte channels |
 
 > **Note:** the XY coordinates, scanner channel, and return information are always decoded regardless of the mask.
+
+### Reading in parallel
+
+A LAZ file is a sequence of chunks (50 000 points each by default) that are compressed independently, so they can be decoded at the same time. A `Reader` is single-threaded, but it hands out any number of `ChunkDecoder`s, each with its own state: give one to every goroutine.
+
+```go
+r, err := golaz.Open("scan.laz")
+if err != nil {
+    log.Fatal(err)
+}
+defer r.Close()
+
+chunks, err := r.Chunks() // file order; chunks[i].FirstPoint, chunks[i].NumPoints
+if errors.Is(err, golaz.ErrChunksUnavailable) {
+    // read sequentially with r.Scan instead (see below)
+}
+
+var next atomic.Int64
+var wg sync.WaitGroup
+for w := 0; w < runtime.GOMAXPROCS(0); w++ {
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        d, err := r.NewChunkDecoder()
+        if err != nil {
+            return
+        }
+        var p golaz.Point
+        for {
+            i := int(next.Add(1)) - 1
+            if i >= len(chunks) {
+                return
+            }
+            if err := d.Load(i); err != nil { // reads chunk i into memory
+                return
+            }
+            for d.Scan(&p) == nil { // io.EOF at the end of the chunk
+                // point number chunks[i].FirstPoint + k of the file
+            }
+        }
+    }()
+}
+wg.Wait()
+```
+
+- A decoder returns exactly the points `Scan` returns for the same indices, and honours the options the `Reader` was opened with (selective mask, compatibility mode).
+- `Chunks` and `NewChunkDecoder` are safe for concurrent use. Decoders read through `io.ReaderAt`, so they do not move the `Reader`'s own position.
+- Uncompressed `.las` files work the same way: they are presented as runs of 50 000 points.
+- Order is up to you: chunks finish in any order, and `FirstPoint` tells where each one belongs.
+- `ErrChunksUnavailable` is returned for files that can only be read front to back: legacy pointwise-compressed files (no chunks), files whose chunk table is missing or corrupt, and `OpenReader` sources without `ReadAt`. A corrupt chunk fails on its own decoder; the other chunks still decode.
 
 ### Writing files
 
