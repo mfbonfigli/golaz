@@ -161,6 +161,7 @@ type ChunkDecoder struct {
 
 	chunk     int    // index of the loaded chunk, -1 when none is loaded
 	remaining uint32 // points of the loaded chunk not yet scanned
+	endErr    error  // set after the last point if the chunk did not end where it should
 }
 
 // NewChunkDecoder returns a decoder for the Reader's chunks. It is safe for
@@ -198,6 +199,7 @@ func (r *Reader) NewChunkDecoder() (*ChunkDecoder, error) {
 func (d *ChunkDecoder) Load(i int) error {
 	d.remaining = 0
 	d.chunk = -1
+	d.endErr = nil
 	if i < 0 || i >= len(d.chunks) {
 		return fmt.Errorf("load chunk %d: file has %d chunks", i, len(d.chunks))
 	}
@@ -224,11 +226,21 @@ func (d *ChunkDecoder) Load(i int) error {
 // slices share the decoder's buffers: they are valid until the next Scan or
 // Load on this decoder.
 //
-// A decode error means the chunk is corrupt: the rest of that chunk cannot
-// be recovered and further Scan calls return io.EOF, but other chunks are
-// unaffected.
+// Any other error means the chunk is corrupt; other chunks are unaffected.
+// There are two kinds, and a caller must treat both as a failed chunk:
+//
+//   - A decode error part-way through: the rest of the chunk cannot be
+//     recovered, and further Scan calls return io.EOF.
+//   - An error in place of io.EOF, after every point has been returned: the
+//     compressed data did not end where the chunk table says it does, so the
+//     points of this chunk cannot be trusted. Scan keeps returning it until
+//     another chunk is loaded. Sequential reading reports the same damage on
+//     the first point of the following chunk.
 func (d *ChunkDecoder) Scan(p *Point) error {
 	if d.remaining == 0 {
+		if d.endErr != nil {
+			return d.endErr
+		}
 		return io.EOF
 	}
 	if err := d.lp.Read(d.ptBuf); err != nil {
@@ -238,6 +250,9 @@ func (d *ChunkDecoder) Scan(p *Point) error {
 		return fmt.Errorf("chunk %d: read point %d: %w", d.chunk, c.FirstPoint+uint64(done), err)
 	}
 	d.remaining--
+	if d.remaining == 0 {
+		d.endErr = d.checkChunkEnd()
+	}
 
 	r := d.r
 	populatePoint(
@@ -253,6 +268,26 @@ func (d *ChunkDecoder) Scan(p *Point) error {
 	)
 	if r.compat != nil {
 		reconstructCompat(p, r.compat)
+	}
+	return nil
+}
+
+// checkChunkEnd verifies, once the last point of a compressed chunk has been
+// decoded, that decoding consumed the chunk's bytes exactly. A damaged chunk
+// often still decodes without error, but then stops short of its end or runs
+// past it; this is the check that catches it. Sequential reading makes the
+// same check when it reaches the next chunk (LASreadPoint.readCore compares
+// the stream position with the chunk table).
+func (d *ChunkDecoder) checkChunkEnd() error {
+	if d.r.lz == nil {
+		return nil // uncompressed: fixed-size records, nothing to verify
+	}
+	pos, err := d.stream.Tell()
+	if err != nil {
+		return nil
+	}
+	if size := int64(len(d.data)); pos != size {
+		return fmt.Errorf("chunk %d is corrupt: decoding ended at byte %d of %d", d.chunk, pos, size)
 	}
 	return nil
 }
